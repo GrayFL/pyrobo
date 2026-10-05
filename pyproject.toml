@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrobo"
+version = "0.1.0"
+description = "Point-cloud-first, frontend-independent robotics algorithms"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26.4", "scipy>=1.17"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "nbformat>=5", "nbclient>=0.10", "ipykernel>=6"]
+examples = ["matplotlib>=3.8", "ipython>=8", "ipywidgets>=8"]
+
+[tool.setuptools.packages.find]
+include = ["pyrobo*"]
+
+[tool.setuptools.package-data]
+"*" = ["README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

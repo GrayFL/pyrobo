@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.ipynb_checkpoints/
+examples/assets/
+examples/*.ipynb
+
+PROJECT.md
+
+.*
+!.gitignore

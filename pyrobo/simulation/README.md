@@ -31,5 +31,5 @@ Notebook 主闭环使用完整已知地图；传感器视图展示局部激光�
 
 `run_navigation(world, start, goal, navigator=..., dt=..., max_steps=...)` 提供无界面实验：重置导航器、保存与输入时间戳对齐的状态/决策，遇到到达、紧急状态、碰撞或步数上限结束。返回 `SimulationRun`，可访问 `poses`、`timestamps`、`velocities`、`outputs` 和 `summary()`。状态日志截止到最后一次控制决策，碰撞步之后的中间位姿不追加为新的控制帧。`max_steps` 耗尽时 `arrived=False`，调用方应检查结果。
 
-运行 `python -m pyrobo.simulation` 输出演示结果与本机延迟分位数；它不导入绘图库。绘图和交互回放见 [Notebook](../../examples/navigation_2d.ipynb)，通过 scipykit 完成。
+运行 `python -m pyrobo.simulation` 使用 RRT-Connect，`python -m pyrobo.simulation --planner voronoi` 使用 Voronoi／D* Lite；两者均以 DWA 完成闭环，输出结果与本机延迟分位数，失败时退出码为 1，不导入绘图库。也可传入 `Navigator(planner=VoronoiConfig(...))` 自定义预算。绘图和交互回放见本地 [Notebook](../../examples/navigation_2d.ipynb)，通过 scipykit 完成。
 

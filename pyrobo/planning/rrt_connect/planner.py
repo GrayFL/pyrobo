@@ -3,8 +3,9 @@ from dataclasses import dataclass
 from time import perf_counter
 
 import numpy as np
-from graphmap.pose import Pose, PoseArray
+from graphmap.pose import Pose
 
+from ..common import PlanResult, densify_path
 from ...pointcloud import PointObstacles
 from ...types import Bounds2D, Footprint, path_poses, planar_state, positive
 
@@ -30,18 +31,6 @@ class RRTConnectConfig:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < lower:
                 raise ValueError(f"{name} must be an integer >= {lower}")
-
-
-@dataclass(frozen=True)
-class PlanResult:
-    path: PoseArray
-    status: str
-    extensions: int
-    elapsed: float
-
-    @property
-    def success(self) -> bool:
-        return self.status == "success"
 
 
 class _Tree:
@@ -146,8 +135,4 @@ class RRTConnect:
         return finish([], "budget_exhausted")
 
     def _densify(self, xy):
-        parts = []
-        for a, b in zip(xy[:-1], xy[1:]):
-            count = max(1, int(np.ceil(np.linalg.norm(b - a) / self.config.path_spacing)))
-            parts.append(np.linspace(a, b, count, endpoint=False))
-        return np.concatenate([*parts, xy[-1:]])
+        return densify_path(xy, self.config.path_spacing)

@@ -6,7 +6,7 @@ import numpy as np
 from graphmap.pose import Pose, PoseArray
 
 from .control import DWAConfig, DynamicWindow
-from .planning import RRTConnect, RRTConnectConfig
+from .planning import RRTConnect, RRTConnectConfig, VoronoiConfig, VoronoiPlanner
 from .pointcloud import PointCloud, PointObstacles
 from .types import Bounds2D, Footprint, Twist2D, path_poses, planar_state, positive, wrap_angle
 
@@ -34,17 +34,23 @@ class NavigationOutput:
 
 
 class Navigator:
-    """Stateful RRT-Connect + DWA black box. No global state, I/O, plotting or threads.
+    """Stateful global planning + DWA. No global state, I/O, plotting or threads.
 
-    History is bounded to a cached path, goal, timing/progress bookkeeping and RNG.
+    History is bounded to a path, one roadmap, turn/timing/progress state and RNG.
     A PointCloud is a complete current obstacle snapshot, not a map update/delta.
     """
-    def __init__(self, *, footprint: Footprint | None = None, planner: RRTConnectConfig | None = None,
+    def __init__(self, *, footprint: Footprint | None = None,
+                 planner: RRTConnectConfig | VoronoiConfig | None = None,
                  controller: DWAConfig | None = None, point_radius: float = 0.03,
                  z_range: tuple[float, float] | None = None, max_cloud_age: float = 0.3,
                  retry_interval: float = 0.5, stall_timeout: float = 4.0):
         self.footprint = footprint or Footprint()
-        self.planner = RRTConnect(planner, self.footprint)
+        if isinstance(planner, VoronoiConfig):
+            self.planner = VoronoiPlanner(planner, self.footprint)
+        elif planner is None or isinstance(planner, RRTConnectConfig):
+            self.planner = RRTConnect(planner, self.footprint)
+        else:
+            raise TypeError("planner must be RRTConnectConfig or VoronoiConfig")
         self.controller = DynamicWindow(controller, self.footprint)
         positive(point_radius, "point_radius", zero=True)
         positive(max_cloud_age, "max_cloud_age", zero=True)
@@ -56,6 +62,7 @@ class Navigator:
 
     def reset(self):
         self.planner.reset()
+        self.controller.reset()
         self._path = np.empty((0, 2))
         self._goal = None
         self._last_timestamp = None
@@ -86,6 +93,8 @@ class Navigator:
         signature = (*goal, o.obstacles.frame, o.bounds)
         changed_goal = self._goal != signature
         if changed_goal:
+            self.planner.reset()
+            self.controller.reset()
             self._path = np.empty((0, 2))
             self._goal = signature
             self._last_plan = -np.inf
@@ -99,6 +108,7 @@ class Navigator:
 
         replanned = False
         planner_status = "cached"
+        planner_diagnostics = {}
         if not at_position:
             if len(self._path):
                 nearest = int(np.argmin(np.linalg.norm(self._path - current[:2], axis=1)))
@@ -114,6 +124,7 @@ class Navigator:
                 plan = self.planner.plan(o.pose, o.goal, obstacles, o.bounds)
                 self._last_plan = o.timestamp
                 replanned, planner_status = True, plan.status
+                planner_diagnostics = {**plan.diagnostics, "elapsed": plan.elapsed, "extensions": plan.extensions}
                 self._path = plan.path.position[:, :2].copy()
 
         path = path_poses(self._path, o.pose.wrd_frame, o.pose.ego_frame)
@@ -137,4 +148,6 @@ class Navigator:
                                 {"elapsed": perf_counter() - started, "replanned": replanned,
                                  "planner_status": planner_status, "clearance": local.clearance,
                                  "candidates": local.candidates, "feasible_candidates": local.feasible_candidates,
+                                 "planner": type(self.planner).__name__, "planning": planner_diagnostics,
+                                 "controller_mode": local.mode,
                                  "obstacle_points": len(obstacles.xy)})

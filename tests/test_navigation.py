@@ -3,7 +3,7 @@ import pytest
 
 from pyrobo import Bounds2D, NavigationInput, Navigator, PointCloud, Twist2D, pose2d
 from pyrobo.control import DWAConfig
-from pyrobo.planning import RRTConnectConfig
+from pyrobo.planning import RRTConnectConfig, VoronoiConfig
 from pyrobo.simulation import Box, Simulator2D, World2D, demo_world, run_navigation
 
 
@@ -95,7 +95,8 @@ def test_runner_reports_step_budget_exhaustion_without_false_arrival():
 
 
 @pytest.mark.parametrize("scene", ["detour", "u_trap", "empty"])
-def test_closed_loop_reaches_goal_without_solid_collision(scene):
+@pytest.mark.parametrize("planner", [RRTConnectConfig(time_budget=.5), VoronoiConfig(time_budget=2)])
+def test_closed_loop_reaches_goal_without_solid_collision(scene, planner):
     if scene == "detour":
         world, start, goal = demo_world()
     elif scene == "u_trap":
@@ -104,7 +105,7 @@ def test_closed_loop_reaches_goal_without_solid_collision(scene):
     else:
         world = World2D(Bounds2D(-5, 5, -5, 5))
         start, goal = pose2d(-3, 0, np.pi), pose2d(3, 0, -np.pi / 2)
-    nav = Navigator(planner=RRTConnectConfig(time_budget=.5))
+    nav = Navigator(planner=planner)
     sim = Simulator2D(world, start)
     cloud = world.point_cloud()
     for _ in range(1000):

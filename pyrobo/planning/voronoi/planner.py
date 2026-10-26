@@ -1,5 +1,5 @@
 """Point-cloud Voronoi roadmap and bounded D* Lite search; no occupancy grid."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 import numpy as np
@@ -59,18 +59,25 @@ class VoronoiPlanner:
         self._points = None
         self._nodes = np.empty((0, 2))
         self._dstar = None
+        self._turn_rejections = {}
 
     @property
     def radius(self):
+        """Broad-phase bound; not the collision shape."""
         return self.footprint.radius + self.config.clearance
+
+    @property
+    def safety_footprint(self):
+        return replace(self.footprint, margin=self.footprint.margin + self.config.clearance)
 
     def plan(self, start: Pose, goal: Pose, obstacles: PointObstacles, bounds: Bounds2D) -> PlanResult:
         started = perf_counter()
-        a, b = planar_state(start)[:2], planar_state(goal)[:2]
+        initial, final = planar_state(start), planar_state(goal)
+        a, b = initial[:2], final[:2]
         frame = obstacles.cloud.frame
         if start.wrd_frame != frame or goal.wrd_frame != frame:
             raise ValueError("start, goal and obstacle frames must agree and be explicit")
-        cfg, radius = self.config, self.radius
+        cfg, footprint = self.config, self.safety_footprint
         deadline = started + cfg.time_budget
         diagnostics = {"reused_graph": False, "sites": 0, "vertices": 0, "edges": 0, "edge_checks": 0}
         expansions = 0
@@ -89,26 +96,26 @@ class VoronoiPlanner:
                 raise _BudgetExhausted
             diagnostics["edge_checks"] += 1
             length = float(np.linalg.norm(q - p))
-            if length > cfg.max_edge_length or not obstacles.segment_free(p, q, radius, bounds):
+            if (length > cfg.max_edge_length
+                    or not obstacles.rectangle_segment_free(p, q, footprint, bounds)
+                    or not obstacles.rectangle_segment_free(q, p, footprint, bounds)):
                 return np.inf
             # Samples influence preference only. Safety uses the exact whole edge above.
-            sample = np.array([p, (p + q) / 2, q])
-            distance = obstacles.tree.query(sample)[0] - obstacles.point_radius
-            boundary_distance = np.minimum.reduce([sample[:, 0] - bounds.xmin, bounds.xmax - sample[:, 0],
-                                                   sample[:, 1] - bounds.ymin, bounds.ymax - sample[:, 1]])
-            clearance = float(np.minimum(distance, boundary_distance).min()) - radius
+            yaw = np.arctan2(q[1] - p[1], q[0] - p[0])
+            sample = np.column_stack((np.array([p, (p + q) / 2, q]), np.full(3, yaw)))
+            clearance = float(obstacles.clearances(sample, footprint, bounds).min())
             penalty = max(0.0, 1.0 - clearance / cfg.safety_distance)
             return max(length, 1e-12) * (1.0 + cfg.safety_weight * penalty)
 
-        if not obstacles.segment_free(a, a, radius, bounds):
+        if obstacles.clearances([initial], footprint, bounds)[0] <= 0:
             return finish([], "invalid_start")
-        if not obstacles.segment_free(b, b, radius, bounds):
+        if obstacles.clearances([final], footprint, bounds)[0] <= 0:
             return finish([], "invalid_goal")
-        if obstacles.segment_free(a, b, radius, bounds):
+        if obstacles.path_free([a, b], footprint, bounds, start_yaw=initial[2], goal_yaw=final[2]):
             self.reset()
             return finish(densify_path(np.array([a, b]), cfg.path_spacing), "success")
 
-        signature = (bounds, frame, obstacles.point_radius, tuple(b), cfg, self.footprint)
+        signature = (bounds, frame, obstacles.point_radius, tuple(final), cfg, self.footprint)
         reuse = self._signature == signature and np.array_equal(self._points, obstacles.xy)
         diagnostics["reused_graph"] = reuse
         try:
@@ -116,6 +123,11 @@ class VoronoiPlanner:
             if reuse:
                 nodes = self._nodes.copy()
                 graph = self._dstar
+                # A turn rejected for one incoming heading can be reachable
+                # after relocation/reconnection. Restore before a fresh repair.
+                for (u, v), cost in self._turn_rejections.items():
+                    graph.update_edge(u, v, cost)
+                self._turn_rejections.clear()
             else:
                 self.reset()
                 sites = self._sites(obstacles.xy, bounds)
@@ -123,9 +135,12 @@ class VoronoiPlanner:
                 check_budget()
                 vor = Voronoi(sites)
                 check_budget()
-                valid = np.isfinite(vor.vertices).all(axis=1) & bounds.contains(vor.vertices, radius)
+                # Orientation is unknown here. Keep vertices for rectangular
+                # edge checks instead of rejecting narrow passages with a disk.
+                valid = np.isfinite(vor.vertices).all(axis=1) & bounds.contains(vor.vertices)
                 indices = np.flatnonzero(valid)
-                valid[indices] &= obstacles.tree.query(vor.vertices[indices])[0] > radius + obstacles.point_radius
+                inner = max(0., min(footprint.length / 2 - abs(footprint.offset_x), footprint.width / 2))
+                valid[indices] &= obstacles.tree.query(vor.vertices[indices])[0] > inner + footprint.margin + obstacles.point_radius
                 vertices = vor.vertices[valid]
                 mapping = np.full(len(valid), -1, dtype=int)
                 mapping[valid] = np.arange(len(vertices))
@@ -175,15 +190,33 @@ class VoronoiPlanner:
             self._nodes, self._dstar = nodes, graph
             self._signature, self._points = signature, obstacles.xy.copy()
             diagnostics["edges"] = sum(bool(np.isfinite(cost)) for row in graph.edges.values() for cost in row.values()) // 2
-            status = graph.compute_shortest_path(max_expansions=cfg.max_expansions, deadline=deadline)
-            expansions = graph.expansions
-            if status != "success":
-                return finish([], status)
-            path_ids = graph.get_path()
-            if not path_ids:
-                return finish([], "no_path")
-            check_budget()
-            return finish(densify_path(nodes[path_ids], cfg.path_spacing), "success")
+            # XY roadmaps do not encode turn history. If an extracted corner
+            # cannot rotate its rectangle, remove that outgoing edge and repair
+            # D* Lite under the same budget. This is conservative, not SE(2).
+            while True:
+                status = graph.compute_shortest_path(max_expansions=cfg.max_expansions - expansions, deadline=deadline)
+                expansions += graph.expansions
+                if status != "success":
+                    return finish([], status)
+                path_ids = graph.get_path()
+                if not path_ids:
+                    return finish([], "no_path")
+                check_budget()
+                previous = initial[2]
+                rejected = None
+                for u, v in zip(path_ids[:-1], path_ids[1:]):
+                    check_budget()
+                    heading = np.arctan2(*(nodes[v] - nodes[u])[::-1])
+                    if not obstacles.rotation_free(nodes[u], previous, heading, footprint, bounds):
+                        rejected = (u, v)
+                        break
+                    previous = heading
+                if rejected is None and not obstacles.rotation_free(b, previous, final[2], footprint, bounds):
+                    rejected = tuple(path_ids[-2:])
+                if rejected is None:
+                    return finish(densify_path(nodes[path_ids], cfg.path_spacing), "success")
+                self._turn_rejections[rejected] = graph.edges[rejected[0]][rejected[1]]
+                graph.update_edge(*rejected, np.inf)
         except _BudgetExhausted:
             return finish([], "budget_exhausted")
         except QhullError:

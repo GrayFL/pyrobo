@@ -14,13 +14,19 @@ def assert_safe_path(result, planner, obstacles, bounds, start, goal):
     xy = result.path.position[:, :2]
     np.testing.assert_allclose(xy[0], start.translation[:2])
     np.testing.assert_allclose(xy[-1], goal.translation[:2])
-    assert np.all(bounds.contains(xy, planner.radius))
-    # Independent brute-force segment distances, including the endpoint connectors.
+    footprint = planner.safety_footprint
+    # Independent exact rectangle-translation test in each segment's frame.
     for a, b in zip(xy[:-1], xy[1:]):
-        delta = b - a
-        t = np.clip((obstacles.xy - a) @ delta / max(delta @ delta, 1e-30), 0, 1)
-        distance = np.linalg.norm(obstacles.xy - a - t[:, None] * delta, axis=1)
-        assert np.all(distance > planner.radius + obstacles.point_radius - 1e-10)
+        length = np.linalg.norm(b - a)
+        yaw = np.arctan2(b[1] - a[1], b[0] - a[0])
+        c, sn = np.cos(yaw), np.sin(yaw)
+        local = (obstacles.xy - (a + b)/2) @ np.array([[c, -sn], [sn, c]])
+        local[:, 0] -= footprint.offset_x
+        delta = np.abs(local) - [(footprint.length + length)/2, footprint.width/2]
+        distance = np.linalg.norm(np.maximum(delta, 0), axis=1) + np.minimum(delta.max(axis=1), 0)
+        assert np.all(distance > footprint.margin + obstacles.point_radius - 1e-10)
+        for point in (a, b):
+            assert np.all(bounds.contains(footprint.corners(pose2d(*point, yaw)), footprint.margin))
     return xy
 
 
@@ -113,8 +119,9 @@ def test_navigator_voronoi_replans_and_brakes_on_disconnected_map():
     wall = World2D(bounds, [Box(1.5, 1.6, -3, 3)]).point_cloud()
     failed = step(.2, wall)
     assert failed.status == "no_path" and failed.safe
-    assert failed.command.linear == pytest.approx(.21)
+    assert failed.command.mode == "estop"
     assert failed.path.shape == (0,)
+    assert failed.diagnostics["progress_m"] is None
     # A later complete snapshot removes the wall and retry succeeds.
     assert step(.8, PointCloud(np.empty((0, 2)))).diagnostics["planner_status"] == "success"
 

@@ -1,11 +1,11 @@
-"""Deterministic 2D geometry, ideal lidar and acceleration-limited robot dynamics."""
-from dataclasses import dataclass
+"""Independent solid geometry and force-driven model-native simulation."""
+from dataclasses import dataclass, replace
 
 import numpy as np
 from graphmap.pose import Pose
 
-from ..control import DWAConfig
-from ..motion import ramp_step
+from ..dynamics import ChassisDynamics, ChassisState, DynamicsConfig
+from ..kinematics import Ackermann, DifferentialDrive, ModelCommand
 from ..pointcloud import PointCloud
 from ..types import Bounds2D, Footprint, Twist2D, planar_state, pose2d, positive
 
@@ -81,7 +81,7 @@ class World2D:
         if pose.wrd_frame != self.frame:
             raise ValueError("pose frame must match world")
         positive(padding, "padding", zero=True)
-        robot = Footprint(footprint.length + 2 * padding, footprint.width + 2 * padding, 0).corners(pose)
+        robot = Footprint(footprint.length + 2 * padding, footprint.width + 2 * padding, 0, footprint.offset_x).corners(pose)
         if not np.all(self.bounds.contains(robot)):
             return True
         c, s = np.cos(state[2]), np.sin(state[2])
@@ -94,55 +94,60 @@ class World2D:
         return False
 
 
-@dataclass(frozen=True)
-class RobotState:
-    timestamp: float
-    pose: Pose
-    velocity: Twist2D
+# Backward-compatible import name; pose still uses graphmap.Pose.
+RobotState = ChassisState
 
 
 class Simulator2D:
-    """No rendering dependency. Each step consumes a velocity setpoint."""
+    """Manual and autonomous commands run through exactly the same plant.
+
+    The public pose is the kinematic reference point. For an Ackermann rear
+    axle, Footprint.offset_x can place the body center ahead of that point.
+    """
     def __init__(self, world: World2D, start: Pose, *, footprint: Footprint | None = None,
-                 dynamics: DWAConfig | None = None, timestamp: float = 0.0):
+                 model: DifferentialDrive | Ackermann | None = None,
+                 dynamics: DynamicsConfig | None = None, timestamp: float = 0.0):
         self.world, self.footprint = world, footprint or Footprint()
-        self.dynamics = dynamics or DWAConfig()
+        self.plant = ChassisDynamics(model, dynamics)
+        self.model, self.dynamics = self.plant.model, self.plant.config
         positive(timestamp, "timestamp", zero=True)
         if world.collides(start, self.footprint):
             raise ValueError("initial robot intersects solid geometry")
-        self.state = RobotState(timestamp, start.copy(), Twist2D())
+        self.state = ChassisState(start.copy(), timestamp=timestamp)
         self.collided = False
+        self.last_dynamics_result = None
 
-    def step(self, command: Twist2D, dt: float = 0.1) -> RobotState:
+    def step(self, command: ModelCommand | Twist2D, dt: float = 0.1, *, command_age=0.0) -> ChassisState:
         positive(dt, "dt")
-        cfg = self.dynamics
-        if not 0 <= command.linear <= cfg.max_speed + 1e-9 or abs(command.angular) > cfg.max_yaw_rate + 1e-9:
-            raise ValueError("command outside simulator limits")
+        positive(command_age, "command_age", zero=True)
         if self.collided:
             raise RuntimeError("simulation terminated after collision")
-        state = planar_state(self.state.pose)[None]
-        velocity = np.array([[self.state.velocity.linear, self.state.velocity.angular]])
-        target = np.array([[command.linear, command.angular]])
-        count = max(1, int(np.ceil(dt / 0.02)))
+        if isinstance(command, Twist2D):
+            command = self.model.from_twist(command)
+        self.model.encode_command(command)
+        count = max(1, int(np.ceil(dt / self.dynamics.substep - 1e-10)))
         h = dt / count
-        old_pose = self.state.pose
-        for _ in range(count):
-            candidate, new_velocity = ramp_step(state, velocity, target, cfg.linear_acceleration, cfg.angular_acceleration, h)
-            pose = pose2d(*candidate[0], frame=self.world.frame, body=old_pose.ego_frame)
-            padding = (max(velocity[0, 0], new_velocity[0, 0]) + self.footprint.radius *
-                       max(abs(velocity[0, 1]), abs(new_velocity[0, 1]))) * h / 2
-            if (self.world.collides(pose, self.footprint, padding=padding)
-                    or self.world.collides(old_pose, self.footprint, padding=padding)):
+        end_time = self.state.timestamp + dt
+        for i in range(count):
+            result = self.plant.step(self.state, command, h, command_age=command_age + i*h)
+            self.last_dynamics_result = result
+            candidate = result.state
+            mid_v = (self.state.velocity.linear + candidate.velocity.linear) / 2
+            mid_w = (self.state.velocity.angular + candidate.velocity.angular) / 2
+            padding = (abs(mid_v) + self.footprint.radius * abs(mid_w)) * h / 2
+            if (self.world.collides(candidate.pose, self.footprint, padding=padding)
+                    or self.world.collides(self.state.pose, self.footprint, padding=padding)):
                 self.collided = True
-                velocity[:] = 0
+                self.state = replace(self.state, velocity=Twist2D(), steering_rate=0., acceleration=0.,
+                                     yaw_acceleration=0., steering_acceleration=0.)
                 break
-            state, velocity, old_pose = candidate, new_velocity, pose
-        self.state = RobotState(self.state.timestamp + dt, old_pose, Twist2D(*velocity[0]))
+            self.state = candidate
+        self.state = replace(self.state, timestamp=end_time)
         return self.state
 
 
 def demo_world():
-    """A reproducible detour with space for a 0.8 m square to turn."""
+    """A reproducible staggered-wall detour for both models and body presets."""
     world = World2D(Bounds2D(0, 12, 0, 9), [Box(3.4, 4.4, 0.0, 5.7),
                                           Box(7.0, 8.0, 3.4, 9.0)])
     return world, pose2d(1.4, 1.5), pose2d(10.5, 7.2, np.pi / 2, body="goal")

@@ -1,5 +1,5 @@
 """Bounded bidirectional RRT-Connect in continuous XY space."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 
 import numpy as np
@@ -34,10 +34,13 @@ class RRTConnectConfig:
 
 
 class _Tree:
-    def __init__(self, root, capacity):
+    def __init__(self, root, capacity, yaw, reverse=False):
         self.nodes = np.empty((capacity + 1, 2))
         self.parent = np.full(capacity + 1, -1, dtype=int)
         self.nodes[0] = root
+        self.heading = np.empty(capacity + 1)
+        self.heading[0] = yaw
+        self.reverse = reverse
         self.size = 1
 
     def branch(self, index):
@@ -60,11 +63,17 @@ class RRTConnect:
 
     @property
     def radius(self):
+        """Broad-phase bound only; collision checks use safety_footprint."""
         return self.footprint.radius + self.config.clearance
+
+    @property
+    def safety_footprint(self):
+        return replace(self.footprint, margin=self.footprint.margin + self.config.clearance)
 
     def plan(self, start: Pose, goal: Pose, obstacles: PointObstacles, bounds: Bounds2D) -> PlanResult:
         started = perf_counter()
-        a, b = planar_state(start)[:2], planar_state(goal)[:2]
+        initial, final = planar_state(start), planar_state(goal)
+        a, b = initial[:2], final[:2]
         frame = obstacles.cloud.frame
         if start.wrd_frame != frame or goal.wrd_frame != frame:
             raise ValueError("start, goal and obstacle frames must agree and be explicit")
@@ -75,15 +84,20 @@ class RRTConnect:
             return PlanResult(path_poses(xy, frame, start.ego_frame), status, extensions, perf_counter() - started)
 
         def free(p, q):
-            return obstacles.segment_free(p, q, self.radius, bounds)
+            return (obstacles.rectangle_segment_free(p, q, self.safety_footprint, bounds)
+                    and obstacles.rectangle_segment_free(q, p, self.safety_footprint, bounds))
 
-        if not free(a, a):
+        def path_free(xy):
+            return obstacles.path_free(xy, self.safety_footprint, bounds,
+                                       start_yaw=initial[2], goal_yaw=final[2])
+
+        if obstacles.clearances([initial], self.safety_footprint, bounds)[0] <= 0:
             return finish([], "invalid_start")
-        if not free(b, b):
+        if obstacles.clearances([final], self.safety_footprint, bounds)[0] <= 0:
             return finish([], "invalid_goal")
-        if free(a, b):
+        if path_free([a, b]):
             return finish(self._densify(np.array([a, b])), "success")
-        trees = [_Tree(a, cfg.max_extensions), _Tree(b, cfg.max_extensions)]
+        trees = [_Tree(a, cfg.max_extensions, initial[2]), _Tree(b, cfg.max_extensions, final[2], True)]
         deadline = started + cfg.time_budget
 
         def available():
@@ -101,8 +115,14 @@ class RRTConnect:
             new = nodes[nearest] + diff * min(1.0, cfg.step_size / distance)
             if not free(nodes[nearest], new):
                 return None, False
+            direction = -diff if tree.reverse else diff
+            heading = float(np.arctan2(direction[1], direction[0]))
+            if not obstacles.rotation_free(nodes[nearest], tree.heading[nearest], heading,
+                                           self.safety_footprint, bounds):
+                return None, False
             index = tree.size
             tree.nodes[index] = new
+            tree.heading[index] = heading
             tree.parent[index] = nearest
             tree.size += 1
             return index, distance <= cfg.step_size
@@ -111,8 +131,7 @@ class RRTConnect:
         while available():
             first, second = trees[active], trees[1 - active]
             target = (second.nodes[0] if self.rng.random() < cfg.goal_bias else
-                      self.rng.uniform([bounds.xmin + self.radius, bounds.ymin + self.radius],
-                                       [bounds.xmax - self.radius, bounds.ymax - self.radius]))
+                      self.rng.uniform([bounds.xmin, bounds.ymin], [bounds.xmax, bounds.ymax]))
             i, _ = extend(first, target)
             if i is not None:
                 while available():
@@ -124,12 +143,15 @@ class RRTConnect:
                         if active == 1:
                             left, right = right, left
                         xy = np.concatenate((left, right[-2::-1]))
+                        if not path_free(xy):
+                            break
                         for _ in range(cfg.shortcut_attempts):
                             if len(xy) <= 2 or perf_counter() >= deadline:
                                 break
                             lo, hi = np.sort(self.rng.choice(len(xy), 2, replace=False))
-                            if hi > lo + 1 and free(xy[lo], xy[hi]):
-                                xy = np.concatenate((xy[:lo + 1], xy[hi:]))
+                            candidate = np.concatenate((xy[:lo + 1], xy[hi:]))
+                            if hi > lo + 1 and path_free(candidate):
+                                xy = candidate
                         return finish(self._densify(xy), "success")
             active = 1 - active
         return finish([], "budget_exhausted")

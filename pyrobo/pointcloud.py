@@ -5,7 +5,7 @@ import numpy as np
 from graphmap.pose import Pose
 from scipy.spatial import cKDTree
 
-from .types import Bounds2D, Footprint, positive
+from .types import Bounds2D, Footprint, positive, wrap_angle
 
 
 @dataclass(frozen=True)
@@ -91,8 +91,9 @@ class PointObstacles:
         states = np.asarray(states, dtype=float)
         shape = states.shape[:-1]
         s = states.reshape(-1, 3)
-        xy, yaw = s[:, :2], s[:, 2]
+        yaw = s[:, 2]
         c, sn = np.cos(yaw), np.sin(yaw)
+        xy = s[:, :2] + footprint.offset_x * np.column_stack((c, sn))
         hx, hy = footprint.length / 2, footprint.width / 2
         ex, ey = np.abs(c) * hx + np.abs(sn) * hy, np.abs(sn) * hx + np.abs(c) * hy
         bound = np.minimum.reduce([xy[:, 0] - bounds.xmin - ex, bounds.xmax - xy[:, 0] - ex,
@@ -116,4 +117,66 @@ class PointObstacles:
                 clearance[near] = footprint.margin + 0.25
                 np.minimum.at(clearance, rows, signed - self.point_radius)
         return (np.minimum(clearance, bound) - footprint.margin).reshape(shape)
+
+    def rectangle_segment_free(self, a, b, footprint: Footprint, bounds: Bounds2D) -> bool:
+        """Exact translation sweep of a rectangle aligned with the segment.
+
+        A translating rectangle sweeps one longer rectangle. KD-tree circles only
+        select points; the final collision predicate always uses the rectangle.
+        """
+        a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+        delta = b - a
+        length = float(np.linalg.norm(delta))
+        yaw = float(np.arctan2(delta[1], delta[0])) if length else 0.0
+        sweep = Footprint(footprint.length + length, footprint.width,
+                          footprint.margin, footprint.offset_x)
+        return bool(self.clearances([[*((a + b) / 2), yaw]], sweep, bounds)[0] > 0)
+
+    def rotation_free(self, xy, first: float, last: float, footprint: Footprint,
+                      bounds: Bounds2D) -> bool:
+        """Conservative continuous rectangle rotation, including between samples."""
+        angle = float(wrap_angle(last - first))
+        if abs(angle) < 1e-12:
+            return bool(self.clearances([[*xy, first]], footprint, bounds)[0] > 0)
+        # Half-interval corner travel bounds cover every orientation. Refine only
+        # ambiguous intervals; unresolved contact is rejected, never skipped.
+        intervals = [(first, first + angle)]
+        for _ in range(12):
+            states = np.array([[*xy, yaw] for pair in intervals for yaw in pair])
+            clear = self.clearances(states, footprint, bounds).reshape(-1, 2)
+            if np.any(clear <= 0):
+                return False
+            pending = []
+            for (lo, hi), values in zip(intervals, clear):
+                if min(values) <= footprint.radius * abs(hi - lo) / 2:
+                    mid = (lo + hi) / 2
+                    pending.extend(((lo, mid), (mid, hi)))
+            if not pending:
+                return True
+            intervals = pending
+        return False
+
+    def path_free(self, xy, footprint: Footprint, bounds: Bounds2D, *,
+                  start_yaw: float | None = None, goal_yaw: float | None = None) -> bool:
+        """Check straight sweeps and the rotation envelope at every corner."""
+        xy = np.asarray(xy, dtype=float).reshape(-1, 2)
+        if not len(xy):
+            return False
+        xy = xy[np.r_[True, np.linalg.norm(np.diff(xy, axis=0), axis=1) > 1e-10]]
+        if len(xy) > 2:
+            directions = np.diff(xy, axis=0)
+            directions /= np.linalg.norm(directions, axis=1)[:, None]
+            corners = np.linalg.norm(np.diff(directions, axis=0), axis=1) > 1e-9
+            xy = xy[np.r_[True, corners, True]]
+        delta = np.diff(xy, axis=0)
+        headings = np.arctan2(delta[:, 1], delta[:, 0])
+        previous = start_yaw if start_yaw is not None else (headings[0] if len(headings) else 0.)
+        for i, heading in enumerate(headings):
+            if not self.rotation_free(xy[i], previous, heading, footprint, bounds):
+                return False
+            if not self.rectangle_segment_free(xy[i], xy[i + 1], footprint, bounds):
+                return False
+            previous = heading
+        return self.rotation_free(xy[-1], previous, goal_yaw if goal_yaw is not None else previous,
+                                  footprint, bounds)
 

@@ -1,46 +1,34 @@
-# DWA：矩形车体的点云局部控制
+# 模型空间 DWA 与可回退路径进度
 
-`DynamicWindow.step(pose, velocity, goal, path, obstacles, bounds, dt) -> DWAResult` 使用 graphmap 位姿，速度由调用方逐帧提供，单位为 m/s、rad/s。控制器只保留原地转向的滞回状态和方向，不积分历史位姿。`reset()` 用于重放或切换任务，`Navigator.reset()` 自动调用它。`stop(...)` 提供使用相同几何检查的减速决策，并清除转向状态。
+`DynamicWindow(config, footprint, model=..., dynamics=...).step(pose, velocity, goal, path, obstacles, bounds, dt, chassis=...)` 返回 `DWAResult`。输入输出位姿使用 graphmap，输出指令是差速 `WheelCommand` 或阿克曼 `AckermannCommand`，均可直接交给 `ChassisDynamics` / `Simulator2D`。速度话题和手动操作通过同一模型适配器进入执行端。
 
-## 计算流程
+## 预测与碰撞
 
-1. 以当前**实测速度**和下一控制周期 `dt` 构造可达速度窗口，限制最大速度/角速度和加速度。默认仅前进，可原地转向。
-2. 将当前位置投影到剩余折线，按弧长插值得到前视目标，兼容稀疏路径和重复点。按朝向误差平滑限制前向速度；当前速度超过上限时，只要求本周期可达到的最大减速。采样速度对包含可达的零速度／零角速度和转向目标角速度。先模拟本周期的加速过程，再保持设定值预测，最后加上减速到静止的尾段。
-3. 另外检查“本周期后立即制动”的轨迹，避免只检查远期制动。
-4. 把附近原始点转换到每个预测状态的车体局部坐标，计算点到矩形的带符号距离，扣除点半径及安全边距；同时检查工作空间边界。远处点使用保守的外接圆距离下界。
-5. 对每个积分区间，额外扣除半个区间内任意车体点的最大运动距离 `(max|v| + radius*max|w|)*h/2`，用两端间距覆盖中间运动，避免在采样之间穿过细障碍。
-6. 在可行候选中综合前视目标距离、到折线的精确距离、朝向、间距和目标速度，并抑制相邻周期角速度反向。朝向偏差较大且已减速时进入原地转向；默认在 60° 进入、20° 以内开始制动，角速度降低后再恢复跟随。接近 ±π 时保留选定转向方向。进入目标位置容差后转向最终 yaw；停止且朝向满足容差后由 `Navigator` 返回 `arrived`。
+1. 以实测状态和伺服时间常数形成模型参考窗口。差速在左右轮速空间采样，并增加直行 / 纯转向参考；阿克曼在车速和转角空间采样。实际可达速度受共享 plant 的力、加速度、jerk、轮速、转角及转角速度约束。
+2. 使用 `ChassisDynamics` 进行 NumPy 批量预测。保留转角、转角速度和加速度历史；同一控制周期的物理子步与实际 plant 完全一致。阿克曼不生成原地旋转候选。
+3. 对保持候选后的制动尾段，以及执行一个周期后立即制动的尾段都检查碰撞。使用真正的有限力 estop；超过 `braking_timeout` 仍未停住的候选不可行。
+4. 点云障碍转换到每个状态的矩形局部坐标，计算带符号距离，扣除点半径、车体安全边距，检查矩形角点相对物理边界的间距。圆形查询范围只用于筛选邻域，不作为最终碰撞形状。
+5. 每段物理子步的中点 twist 为 plant 实际采用的圆弧。将 `(|v_mid| + footprint.radius*|w_mid|)*h` 在记录区间内累计，用半个总运动距离覆盖两端之间的扫掠区域；矩形旋转和倒车也受此检查。
+6. 按前视目标、路径、朝向、间距和速度评分。差速保留原地转向滞回；阿克曼始终通过行驶转弯，在末段增加目标朝向成本。倒车候选具有较小惩罚，仍可用于恢复。
 
-原地转向和转向制动也经过步骤 3–5 的同一碰撞检查，不直接输出未经检查的旋转指令。
+`trajectory` 包含制动尾段，不要求整条执行；每次仅发送当前指令，下一周期重新规划。无可行候选时返回 `mode='estop'` 的原生指令；`safe` 表示该真实制动轨迹是否安全且已停住，不代表瞬停。
 
-模型为加速度受限单轮车，积分采用小步中点速度和恒定 twist 的精确圆弧。仿真器使用同一运动规律、更细积分步长；碰撞真值独立计算实体矩形相交。
+阿克曼必须传入 `ChassisState`，因为停车时 Twist 不能确定转角。差速为兼容旧观测可省略该参数，此时假设未提供的加速度为零；物理闭环应始终传完整实测状态。`DWAConfig` 中速度 / 加速度参数仅用于创建默认模型 / 动力学，显式传入的模型和动力学是运动能力的唯一来源。
 
-## 参数
+## 路径跟踪
 
-| 参数 | 默认值 |
-| --- | --- |
-| 最大前向速度 / 偏航速度 | 0.9 m/s / 1.5 rad/s |
-| 线加速度 / 角加速度 | 0.9 m/s² / 2.5 rad/s² |
-| 预测时间 / 最大积分步长 | 1.6 s / 0.08 s |
-| 线速度 / 角速度采样数 | 7 / 17（另加入可达零值并去重） |
-| 前视距离 | 1.3 m |
-| 朝向限速角 / 原地转向进入角 / 退出角 | 60° / 60° / 20°（配置单位为弧度） |
-| 原地转向增益 / 最小期望角速度 | 1.0 / 0.3 rad/s（仍受速度与加速度窗口限制） |
-| 角速度反向惩罚权重 | 0.2 |
-| 位置 / 朝向容差 | 0.18 m / 0.10 rad |
-| 默认车体与边距 | 0.8 × 0.8 m，边距 0.08 m |
+`PathTracker.set_path(PoseArray)` 保存完整路径，`update(pose, lookahead)` 返回 `PathProgress`：前视 `target`、本帧 `remaining`、弧长 `distance`、`remaining_distance`、当前 `segment` 和目标 `target_segment`。
 
-`DWAConfig` 还包含 `position_weight`、`path_weight`、`heading_weight`、`clearance_weight` 和 `speed_weight`。历史转向逻辑对应 `heading_slow_angle`、`turn_in_place_angle`、`turn_exit_angle`、`turn_gain`、`min_turn_yaw_rate` 和 `yaw_reversal_weight`。过长预测时间会增大开销、偏向保守；过低加速度使可达窗口变窄。应根据实际底盘能力设置参数，并确保下一次调用与 `dt` 约定一致。
+投影在上次弧长附近进行，搜索区间随实际位移增长；窗口正反方向对称，倒车后自然回到更早的段。交叉路径按弧长连续性区分支路，不使用“永远递增的航点索引”，也不删掉已走航点。前视目标沿折线插值，所以在抵达转角之前就会跨到下一段；不会为了每个中间航点停车。重复点、稀疏点、单点路径均受支持。
 
-输出中的 `trajectory` 包含制动尾段，**不是要求执行整条轨迹**。每次仅发送当前 `command`，下一帧重新决策。`clearance` 已扣除安全边距及运动区间覆盖量，是对当前障碍快照的保守间距。候选数和可行候选数可用于诊断。
+重新规划调用 `set_path`，离散重定位调用 `reset` 后重新设置路径。Navigator 持有 tracker 并传入进度；独立 DWA 调用内部也有 tracker。`remaining` 是当前视图，原始路径始终保留。
 
-`DWAResult.mode` 为 `following`、`turning`、`turn_braking`、`aligning`、`braking` 或 `blocked`；导航器通过 `diagnostics["controller_mode"]` 公开它，不改变现有导航状态名。
+## 参数与范围
 
-如果没有可行候选，返回可达的最大减速设定值，`feasible_candidates=0`。减速轨迹安全时 `safe=True`；连减速轨迹都碰撞时 `safe=False`。不会把仍在运动的底盘伪装成可瞬停的零速度。上层必须处理 `safe=False`。输入测量超出配置速度范围会报错，不会静默截断。
+默认差速预测 1.8 s、前视 1.3 m；不提供显式 DWAConfig 的阿克曼为 2.4 s、1.6 m。轨迹记录间隔 ≤0.08 s，物理子步默认 ≤0.02 s；默认采样参数 7 / 17，加入锚点与轮速网格后候选数以结果为准。默认位置 / yaw 容差 0.18 m / 0.10 rad，制动预测预算 4 s。`allow_reverse=False` 禁止主动选择反向目标，但已有反向实测速度仍须先物理制动。
 
-控制器将本次点云视为静态，没有动态障碍物轨迹预测。未来障碍变化、稀疏漏检、执行误差和延迟需在系统层处理。局部代价仍可能造成停滞，组合导航器会在无位置进展后尝试重规划。
+`mode` 为 `following`、`turning`、`turn_braking`、`aligning`、`braking` 或 `blocked`。只有差速使用原地转向模式。`reset` 清转向与跟踪状态，不改变任何外部底盘状态。
 
-参考：[Fox、Burgard、Thrun，The Dynamic Window Approach to Collision Avoidance，1997](https://publications.ri.cmu.edu/the-dynamic-window-approach-to-collision-avoidance)。本实现沿用动态窗口思想，矩形点云几何、评分和制动轨迹检查是针对本项目的实现选择，不是原论文的逐项复刻。
+局部控制可能陷入局部极值；它不为任意汽车停车姿态保证可达。Navigator 为阿克曼终点预留沿目标 yaw 的直线入射段，并在无位置进展时重规划。规划器的跟踪余量和前视距离应匹配车辆尺寸与最小转弯半径。
 
-历史项目 `dynamic_window_approach` 的向量化预测、KD-tree 避障思路与现有实现合并，迁入弧长前视、朝向限速、转向滞回和反向惩罚。旧 `ConfigDWA`／异步 `DWA` 调用应改为 `DWAConfig`／`DynamicWindow.step` 或 `Navigator.step`；不迁入后台循环、导入时创建日志文件、默认体素丢点和瞬时停车／转向捷径。历史源码位置见根目录 `PROJECT.md`。
-
+参考：[Fox、Burgard、Thrun，The Dynamic Window Approach to Collision Avoidance](https://publications.ri.cmu.edu/the-dynamic-window-approach-to-collision-avoidance)。这是结合原始点云、模型控制空间和力驱动预测的项目实现，不是原论文的逐项复刻。

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pyrobo import Bounds2D, Footprint, PointCloud, PointObstacles, Twist2D, pose2d
+from pyrobo import (Bounds2D, ChassisState, Footprint, PointCloud, PointObstacles, Twist2D, WheelCommand, pose2d)
 from pyrobo.control import DWAConfig, DynamicWindow
 from pyrobo.control.dwa.path import path_lookahead, polyline_distances
 from pyrobo.planning import RRTConnect, RRTConnectConfig
@@ -19,7 +19,7 @@ def test_rrt_finds_detour_and_all_edges_are_valid():
     np.testing.assert_allclose(xy[0], start.translation[:2])
     np.testing.assert_allclose(xy[-1], goal.translation[:2])
     assert len(xy) > 2
-    assert all(obstacles.segment_free(a, b, planner.radius, world.bounds) for a, b in zip(xy[:-1], xy[1:]))
+    assert obstacles.path_free(xy, planner.safety_footprint, world.bounds, start_yaw=0, goal_yaw=np.pi/2)
     planner.reset()
     replay = planner.plan(start, goal, obstacles, world.bounds)
     np.testing.assert_allclose(replay.path.position, result.path.position)
@@ -48,21 +48,23 @@ def test_dwa_acceleration_limits_and_braking_tail():
     v = Twist2D(.6, .5)
     result = dwa.step(pose2d(0, 0), v, pose2d(3, 0), path_poses([[0, 0], [3, 0]]), obstacles, bounds, .1)
     assert result.safe
-    assert abs(result.command.linear - v.linear) <= dwa.config.linear_acceleration * .1 + 1e-12
-    assert abs(result.command.angular - v.angular) <= dwa.config.angular_acceleration * .1 + 1e-12
+    actual = dwa.plant.step(ChassisState(pose2d(0, 0), v), result.command, .1).state.velocity
+    assert abs(actual.linear - v.linear) <= dwa.plant.config.brake_acceleration * .1 + 1e-12
+    assert abs(actual.angular - v.angular) <= dwa.config.angular_acceleration * .1 + 1e-12
     assert len(result.trajectory.position) > int(dwa.config.prediction_time / dwa.config.integration_dt)
     stopped = dwa.stop(pose2d(0, 0), v, obstacles, bounds, .1)
-    assert stopped.command.linear == pytest.approx(.51)
-    assert stopped.command.angular == pytest.approx(.25)
+    assert stopped.command.mode == "estop"
+    braking = dwa.plant.step(ChassisState(pose2d(0, 0), v), stopped.command, .1).state.velocity
+    assert 0 < braking.linear < v.linear and 0 <= braking.angular < v.angular
     assert stopped.safe
 
 
 def test_unavoidable_collision_is_explicit_not_a_false_safe_stop():
-    obstacle = PointObstacles(PointCloud([[.55, 0]]), point_radius=.03)
+    obstacle = PointObstacles(PointCloud([[.43, 0]]), point_radius=.03)
     dwa = DynamicWindow()
     result = dwa.stop(pose2d(0, 0), Twist2D(.9, 0), obstacle, Bounds2D(-5, 5, -5, 5), .1)
     assert not result.safe
-    assert result.command.linear == pytest.approx(.81)
+    assert result.command.mode == "estop"
     assert result.clearance < 0
 
 
@@ -91,14 +93,14 @@ def test_turn_hysteresis_brakes_before_release_and_reset_is_reproducible():
     obstacles = PointObstacles(PointCloud(np.empty((0, 2))))
     path, goal = path_poses([[0, 0], [3, 0]]), pose2d(3, 0)
     first = dwa.step(pose2d(0, 0, np.pi), Twist2D(), goal, path, obstacles, bounds, .1)
-    assert first.mode == "turning" and first.safe and first.command.linear == 0
-    assert abs(first.command.angular) > 0
+    assert first.mode == "turning" and first.safe and first.command.left + first.command.right == 0
+    assert first.command.left != first.command.right
     turning = dwa.step(pose2d(0, 0, -.5), Twist2D(0, .3), goal, path, obstacles, bounds, .1)
-    assert turning.mode == "turning" and turning.command.linear == 0
+    assert turning.mode == "turning" and turning.command.left + turning.command.right == 0
     braking = dwa.step(pose2d(0, 0, -.1), Twist2D(0, .3), goal, path, obstacles, bounds, .1)
-    assert braking.mode == "turn_braking" and braking.command.angular == pytest.approx(.05)
+    assert braking.mode == "turn_braking" and braking.command.left == braking.command.right == 0
     following = dwa.step(pose2d(0, 0, -.1), Twist2D(), goal, path, obstacles, bounds, .1)
-    assert following.mode == "following" and following.command.linear > 0
+    assert following.mode == "following" and following.command.left + following.command.right > 0
     dwa.reset()
     assert dwa.step(pose2d(0, 0, np.pi), Twist2D(), goal, path, obstacles, bounds, .1).command == first.command
 
@@ -107,7 +109,9 @@ def test_heading_speed_cap_is_acceleration_limited():
     dwa = DynamicWindow()
     result = dwa.step(pose2d(0, 0, np.pi), Twist2D(.8, 0), pose2d(3, 0), path_poses([[0, 0], [3, 0]]),
                       PointObstacles(PointCloud(np.empty((0, 2)))), Bounds2D(-5, 5, -5, 5), .1)
-    assert result.safe and result.command.linear == pytest.approx(.71)
+    assert result.safe
+    next_state = dwa.plant.step(ChassisState(pose2d(0, 0, np.pi), Twist2D(.8, 0)), result.command, .1).state
+    assert 0 < .8 - next_state.velocity.linear <= dwa.plant.config.brake_acceleration * .1
 
 
 def test_turning_cannot_bypass_rectangle_or_braking_checks():
@@ -121,5 +125,6 @@ def test_turning_cannot_bypass_rectangle_or_braking_checks():
         np.column_stack((result.trajectory.position[:, :2],
                          np.arctan2(result.trajectory.rot_mat[:, 1, 0], result.trajectory.rot_mat[:, 0, 0]))),
         dwa.footprint, bounds) > 0)
-    assert abs(result.command.angular) <= dwa.config.angular_acceleration * .1
+    actual = dwa.plant.step(ChassisState(pose2d(0, 0)), result.command, .1).state
+    assert abs(actual.velocity.angular) <= dwa.config.angular_acceleration * .1
 

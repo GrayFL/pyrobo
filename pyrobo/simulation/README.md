@@ -1,35 +1,48 @@
-# 轻量 2D 仿真
+# 无界面 2D 仿真与导航例程
 
-`World2D` 保存物理矩形边界和轴对齐实体障碍；`Simulator2D` 保存当前 `RobotState(timestamp, pose, velocity)`，接受速度设定值并按加速度约束推进。所有算法接口与 Matplotlib、Jupyter、ROS 无关。
+`World2D` 提供物理边界、实心矩形障碍与点云；`Simulator2D` 使用共享 `ChassisDynamics` 保存实际 `ChassisState`。旧导入名 `RobotState` 指向同一状态类型。所有算法与 Matplotlib、ROS、Jupyter 无关。
 
 ```python
-from pyrobo import NavigationInput, Navigator
+from pyrobo import Ackermann, Footprint, NavigationInput, Navigator
 from pyrobo.simulation import Simulator2D, demo_world
 
 world, start, goal = demo_world()
-sim, nav = Simulator2D(world, start), Navigator()
-known_map = world.point_cloud(spacing=0.04)
+nav = Navigator(model=Ackermann(), footprint=Footprint.long())
+sim = Simulator2D(world, start, model=nav.model, footprint=nav.footprint,
+                  dynamics=nav.controller.plant.config)
+cloud = world.point_cloud()
 for _ in range(1000):
     s = sim.state
-    result = nav.step(NavigationInput(s.timestamp, s.pose, s.velocity,
-                                     goal, known_map, world.bounds, dt=0.1))
-    if result.status in ("arrived", "emergency_stop"):
+    out = nav.step(NavigationInput(s.timestamp, s.pose, s.velocity, goal,
+                                  cloud, world.bounds, dt=0.1, chassis=s))
+    if out.status in ("arrived", "emergency_stop"):
         break
-    sim.step(result.command, dt=0.1)
+    sim.step(out.command, 0.1)
     if sim.collided:
         break
 ```
 
-## 两类点云
+`sim.step` 接收模型原生指令，也允许 Twist2D，经 `model.from_twist` 适配。收到的是速度 / 转角设定值，实际运动由有限驱动力、阻力、力矩和运动学共同积分。`command_age` 默认为零，表示新命令；在长时间 step 中也会触发超时软停。手动与 DWA 共享同一 plant，不重置状态。
 
-- `world.point_cloud(spacing)`：按线段长度采样完整障碍边界，是**已知静态地图**。没有栅格，不填充障碍内部。默认 0.04 m 间距配合算法的 0.03 m 点半径覆盖相邻采样间隙。
-- `world.lidar(pose, timestamp=..., beams=360, max_range=8)`：射线与线段求交，仅保留最近有效回波，包含遮挡，返回机器人坐标系点云。`scan.transformed(pose)` 转到世界系。无回波不生成最大量程伪障碍。
+## 地图与碰撞
 
-Notebook 主闭环使用完整已知地图；传感器视图展示局部激光观测，明确区分两者。将局部扫描用于未知环境需要额外的点云记忆/地图模块，当前 Navigator 不会把每帧扫描自动融合。添加动态障碍时，应更新完整快照和仿真实体几何；当前算法只对新快照重新规划，不预测物体运动。
+- `world.point_cloud(spacing=0.04)` 沿完整边界采样已知静态点云，不填充栅格或实体内部。默认点半径 0.03 m 覆盖该采样间隙。
+- `world.lidar(pose, timestamp=..., beams=360, max_range=8)` 计算射线首个命中，包含遮挡；返回机器人坐标系点云，使用 `scan.transformed(pose)` 转为世界系。
 
-实体碰撞使用分离轴定理，检查车体矩形与实心障碍以及物理边界，**不复用规划器的点云碰撞结果**。运动细分为至多 0.02 s，并检查带区间运动余量的两端车体。触发碰撞后设置 `collided=True`、保留最后一个安全位姿、终止运动，后续 step 报错；它是碰撞终止模型，不是接触力学仿真。
+例程使用完整已知地图。将局部扫描用于未知环境需要调用方维护历史地图；Navigator 不自动积累点云。
 
-`run_navigation(world, start, goal, navigator=..., dt=..., max_steps=...)` 提供无界面实验：重置导航器、保存与输入时间戳对齐的状态/决策，遇到到达、紧急状态、碰撞或步数上限结束。返回 `SimulationRun`，可访问 `poses`、`timestamps`、`velocities`、`outputs` 和 `summary()`。状态日志截止到最后一次控制决策，碰撞步之后的中间位姿不追加为新的控制帧。`max_steps` 耗尽时 `arrived=False`，调用方应检查结果。
+实体碰撞使用独立的分离轴定理，检查偏移矩形与实心障碍、工作空间边界。每个物理子步按中点 twist 的实际车体运动上界检查两端膨胀矩形，覆盖期间扫掠。它不调用规划器点云碰撞函数。碰撞时保留最后安全位姿、速度归零、`collided=True`，后续 step 报错。这是仿真终止语义，不是接触求解。
 
-运行 `python -m pyrobo.simulation` 使用 RRT-Connect，`python -m pyrobo.simulation --planner voronoi` 使用 Voronoi／D* Lite；两者均以 DWA 完成闭环，输出结果与本机延迟分位数，失败时退出码为 1，不导入绘图库。也可传入 `Navigator(planner=VoronoiConfig(...))` 自定义预算。绘图和交互回放见本地 [Notebook](../../examples/navigation_2d.ipynb)，通过 scipykit 完成。
+## 实验日志与手动接管
 
+`run_navigation(world, start, goal, navigator=..., dt=0.1, max_steps=1000, command_override=...)` 重置导航器并运行闭环。回调 `command_override(step_index, chassis_state, navigation_output)` 返回原生模型指令即可接管，返回 `None` 交还 DWA。导航器持续收到实测状态，路径进度不会在交接时丢失。
+
+返回 `SimulationRun`，含 `poses`、`timestamps`、实测 `velocities` / `steering`、导航 `outputs`、实际选定的 `commands`、`manual` 来源标记，以及上一执行周期末的力 / 力矩 `efforts`。每条日志在输入时间戳对齐；最后一条命令可能因到达 / 步数预算而未执行。遇到到达、紧急状态、实体碰撞或步数预算结束，务必检查 `arrived` / `collided`，预算耗尽不算到达。
+
+```bash
+python -m pyrobo.simulation --planner rrt_connect --model differential --footprint compact
+python -m pyrobo.simulation --planner voronoi --model ackermann --footprint long
+python -m pyrobo.simulation --model ackermann --scenario handoff --plot /tmp/handoff.png
+```
+
+`detour` 为交错墙绕行，`handoff` 在直线路径上注入三秒手动倒车，随后恢复 DWA。`summary()` 报告到达、碰撞、反向帧数、手动帧数、重规划次数及计算耗时。可选 `--plot` 保存路径与矩形轮廓、速度、转角、路径进度、力 / 力矩；核心仿真不导入绘图库。例程失败退出码为 1。

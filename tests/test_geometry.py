@@ -80,3 +80,37 @@ def test_lidar_first_returns_and_sensor_to_world():
     assert world.collides(pose2d(1.5, 0), Footprint())
     assert not world.collides(pose, Footprint())
 
+
+@pytest.mark.parametrize("length,width", [(0.5, 0.5), (1., .5), (1.7, .32)])
+def test_arbitrary_rectangles_and_axle_offset(length, width):
+    footprint = Footprint(length, width, 0., .2)
+    world = World2D(Bounds2D(-4, 4, -4, 4), [Box(.2 + length/2 - .01, 2., -.01, .01)])
+    assert world.collides(pose2d(0, 0), footprint)
+    obstacle = PointObstacles(PointCloud([[.2 + length/2 - .005, 0]]), point_radius=0)
+    assert obstacle.clearances([[0, 0, 0]], footprint, world.bounds)[0] < 0
+
+
+def test_rectangle_translation_and_rotation_sweep_between_samples():
+    footprint = Footprint.long(margin=0)
+    bounds = Bounds2D(-4, 4, -4, 4)
+    obstacle = PointObstacles(PointCloud([[.123, 0]]), point_radius=0)
+    assert not obstacle.rectangle_segment_free([-1, 0], [1, 0], footprint, bounds)
+    # End orientations are free but the middle of the turn hits the long corner.
+    point = PointObstacles(PointCloud([[.5, .2]]), point_radius=.01)
+    assert point.clearances([[0, 0, -np.pi/4], [0, 0, np.pi/2]], footprint, bounds).min() > 0
+    assert not point.rotation_free([0, 0], -np.pi/4, np.pi/2, footprint, bounds)
+
+
+@pytest.mark.parametrize("planner_name", ["rrt", "voronoi"])
+def test_long_rectangle_uses_narrow_corridor_rejected_by_outer_circle(planner_name):
+    from pyrobo.planning import RRTConnect, RRTConnectConfig, VoronoiConfig, VoronoiPlanner
+    footprint = Footprint.long(margin=.02)
+    bounds = Bounds2D(-3, 3, -.4, .4)
+    obstacles = PointObstacles(World2D(bounds).point_cloud())
+    planner = (RRTConnect(RRTConnectConfig(clearance=0), footprint) if planner_name == "rrt"
+               else VoronoiPlanner(VoronoiConfig(clearance=0), footprint))
+    assert not obstacles.segment_free([-2, 0], [2, 0], footprint.radius, bounds)
+    result = planner.plan(pose2d(-2, 0), pose2d(2, 0), obstacles, bounds)
+    assert result.success
+    assert planner.plan(pose2d(-2, 0, np.pi/2), pose2d(2, 0), obstacles, bounds).status == "invalid_start"
+

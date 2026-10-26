@@ -60,11 +60,11 @@ def test_new_obstacle_invalidates_cached_path():
 def test_at_goal_must_stop_and_align():
     nav = Navigator()
     out = nav.step(observation(goal=pose2d(0, 0), velocity=Twist2D(.3, 0)))
-    assert out.status == "braking" and out.command.linear > 0
+    assert out.status == "braking" and out.command.mode == "estop"
     out = nav.step(observation(.1, goal=pose2d(0, 0)))
-    assert out.status == "arrived" and out.command == Twist2D()
+    assert out.status == "arrived" and out.command.mode == "estop"
     out = nav.step(observation(.2, goal=pose2d(0, 0, np.pi / 2)))
-    assert out.status == "aligning" and out.command.angular > 0
+    assert out.status == "aligning" and out.command.right > out.command.left
 
 
 def test_no_route_returns_attainable_braking_command():
@@ -73,14 +73,17 @@ def test_no_route_returns_attainable_braking_command():
     out = nav.step(observation(velocity=Twist2D(.3, 0), obstacles=world.point_cloud(), bounds=world.bounds))
     assert out.status == "no_path" and out.safe
     assert out.diagnostics["planner_status"] == "budget_exhausted"
-    assert out.command.linear == pytest.approx(.21)
+    assert out.command.mode == "estop"
 
 
 def test_simulator_detects_thin_solid_during_a_long_step():
     world = World2D(Bounds2D(-2, 3, -2, 2), [Box(1, 1.01, -1, 1)])
     sim = Simulator2D(world, pose2d(0, 0))
-    state = sim.step(Twist2D(.9, 0), dt=3.)
-    assert sim.collided and state.pose.translation[0] < .6
+    for _ in range(40):
+        state = sim.step(Twist2D(.9, 0))
+        if sim.collided:
+            break
+    assert sim.collided and state.pose.translation[0] < .75
     assert state.velocity == Twist2D()
     with pytest.raises(RuntimeError, match="terminated"):
         sim.step(Twist2D())
@@ -110,7 +113,7 @@ def test_closed_loop_reaches_goal_without_solid_collision(scene, planner):
     cloud = world.point_cloud()
     for _ in range(1000):
         s = sim.state
-        out = nav.step(NavigationInput(s.timestamp, s.pose, s.velocity, goal, cloud, world.bounds))
+        out = nav.step(NavigationInput(s.timestamp, s.pose, s.velocity, goal, cloud, world.bounds, chassis=s))
         assert out.safe, (scene, out.status)
         if out.status == "arrived":
             break

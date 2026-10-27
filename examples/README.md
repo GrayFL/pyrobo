@@ -42,3 +42,15 @@ python -m examples.assisted_teleop --model ackermann --case avoid
 `assisted_teleop.py` 使用 Supervisor 和 TeleopAdapter 提交人工期望，运行无障碍、严格停障、辅助绕障和不可验证制动四类场景。两种车型均经过共享 DWA 与最终安全门，再交给同一个物理 plant。它会检查停障没有横向偏移、绕障确实通过障碍、不可行时没有假称安全，并打印运动状态和安全动作。
 
 handoff CLI 同样通过 `control_input` 提交期望，手动期间不会额外运行自动 DWA。`manual_control.py` 是底层物理例程，不包含规划与辅助安全链路。
+
+## Pygame 交互测试台
+
+```bash
+python -m pip install -e '.[interactive]'
+python -m examples.pygame_sim --config examples/configs/pygame.toml
+python -m examples.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
+```
+
+提供 WASD / 箭头键、屏幕虚拟摇杆、可配置 USB 手柄，以及点击 / 拖动地图设置导航位置与朝向。主线程绘图，工作线程运行共享 Supervisor → DWA → SafetyGuard → Simulator 链路；失焦、断开手柄和输入超时会暂停。所有模型、动力学、规划器参数可通过 TOML 和 `--set` 调整。
+
+操作、配置和无显示测试方法见 [pygame_sim/README.md](pygame_sim/README.md)。[pygame.toml](configs/pygame.toml) 是可直接修改的完整模板。

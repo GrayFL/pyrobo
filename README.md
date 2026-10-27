@@ -99,6 +99,18 @@ runtime.set_mode(ControlMode.AUTO)
 
 直线上的矩形平移使用完整扫掠矩形，转角使用带连续区间覆盖的旋转矩形；外接圆只用于邻域查询和运动距离上界。点半径默认 0.03 m，安全边距与全局跟踪余量另外计入。示例表面间距 0.04 m。
 
+## Pygame 交互测试
+
+在仓库根目录运行，可通过 WASD、屏幕摇杆或 USB 手柄驾驶；点击地图设定导航目标，拖动指定到达朝向。支持切换全局算法、车型与矩形尺寸，并显示路径、预测轨迹和安全状态。
+
+```bash
+python -m pip install -e '.[interactive]'
+python -m examples.pygame_sim --config examples/configs/pygame.toml
+python -m examples.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
+```
+
+G 恢复自动导航，Space 暂停，E 急停，R 解除到暂停，Home 重置；手动输入默认停障辅助，按 2 切换辅助绕障。详见[交互测试台说明](examples/pygame_sim/README.md)及[配置模板](examples/configs/pygame.toml)。pygame 为可选依赖，不进入核心库。
+
 ## 运行例程
 
 ```bash

@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 
 from .. import (Ackermann, Bounds2D, DifferentialDrive, Footprint, Navigator,
-                RRTConnectConfig, VoronoiConfig, pose2d)
+                RRTConnectConfig, Twist2D, VoronoiConfig, pose2d)
+from ..runtime import ControlMode
 from . import World2D, demo_world, run_navigation
 
 
@@ -60,18 +61,16 @@ def main():
     config = (VoronoiConfig(clearance=clearance, time_budget=2.) if args.planner == 'voronoi'
               else RRTConnectConfig(clearance=clearance, time_budget=.5))
     world, start, goal = demo_world()
-    override = None
+    control_input = None
     if args.scenario == 'handoff':
         world = World2D(Bounds2D(-2, 9, -3, 3))
         start, goal = pose2d(0, 0), pose2d(7, 0)
-        # Navigator keeps receiving measured state while manual control owns the
-        # same command interface. No reset or pose/velocity rewriting on handoff.
-        def override(step, state, output):
+        def control_input(step, state, supervisor):
+            supervisor.set_mode(ControlMode.MANUAL if 35 <= step < 65 else ControlMode.AUTO)
             if 35 <= step < 65:
-                return model.command(-.35, state.steering if isinstance(model, Ackermann) else 0.)
-            return None
+                supervisor.submit_teleop(Twist2D(-.35, 0.), state.timestamp)
     run = run_navigation(world, start, goal, navigator=Navigator(model=model, footprint=footprint, planner=config),
-                         command_override=override)
+                         control_input=control_input)
     print(json.dumps({'planner': args.planner, 'model': args.model, 'footprint': args.footprint,
                       'scenario': args.scenario, **run.summary()}, indent=2))
     if args.plot:

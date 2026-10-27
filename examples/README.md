@@ -31,3 +31,14 @@ python -m examples.manual_control
 [manual_control.py](manual_control.py) 对两种模型依次运行速度话题跟踪、滑行、倒车和急停，打印实际速度、转角与力。`track` 零目标、`coast` 和 `estop` 含义不同，分别为平滑停、零主动力滑行和有限力紧急制动。可以把最后的 ChassisState 直接传给 Navigator 接着自主导航。
 
 这些例程不依赖 Notebook 内核或 scipykit。使用 `--plot` 时需 Matplotlib；绘图输出路径由调用方指定。算法测试另覆盖稀疏 / 重复航点、交叉路径、转动扫掠、窄通道和预测 / 执行一致性。
+
+## 人工期望与 DWA 辅助
+
+```bash
+python -m examples.assisted_teleop
+python -m examples.assisted_teleop --model ackermann --case avoid
+```
+
+`assisted_teleop.py` 使用 Supervisor 和 TeleopAdapter 提交人工期望，运行无障碍、严格停障、辅助绕障和不可验证制动四类场景。两种车型均经过共享 DWA 与最终安全门，再交给同一个物理 plant。它会检查停障没有横向偏移、绕障确实通过障碍、不可行时没有假称安全，并打印运动状态和安全动作。
+
+handoff CLI 同样通过 `control_input` 提交期望，手动期间不会额外运行自动 DWA。`manual_control.py` 是底层物理例程，不包含规划与辅助安全链路。

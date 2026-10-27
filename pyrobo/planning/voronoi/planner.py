@@ -7,8 +7,10 @@ from graphmap.pose import Pose
 from scipy.spatial import QhullError, Voronoi, cKDTree
 
 from ..common import PlanResult, densify_path
-from ...pointcloud import PointObstacles
-from ...types import Bounds2D, Footprint, path_poses, planar_state, positive
+from pyrobo.geometry.collision import PointObstacles
+from pyrobo.core.obstacles import Bounds2D
+from pyrobo.core.footprint import Footprint
+from pyrobo.core.geometry import path_poses, planar_state, positive
 from .dstar_lite import DStarLiteGraph
 
 

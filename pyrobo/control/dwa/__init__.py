@@ -1,3 +1,5 @@
-from .controller import DWAConfig, DWAResult, DynamicWindow
+from .config import DWAConfig
+from .controller import DWAResult, DynamicWindow
+from .engine import DWAEngine
 
-__all__ = ["DWAConfig", "DWAResult", "DynamicWindow"]
+__all__ = ['DWAConfig', 'DWAResult', 'DynamicWindow', 'DWAEngine']

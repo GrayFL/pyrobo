@@ -1,6 +1,6 @@
 # 运动学模型与共享力驱动动力学
 
-`kinematics.py` 定义模型及模型指令，`dynamics.py` 提供 `ChassisDynamics`。DWA、手动控制和 `Simulator2D` 共用同一 NumPy 批量积分核心。实现参考用户原型 [ChassisDynamics](../assets/ChassisDynamics/chassis_sim_design.md)，保留原型的两类自由度、离散逆伺服和隐式阻力设计。
+`core/commands.py` 定义模型指令，`models/kinematics/` 定义运动学，`models/dynamics/` 提供 `ChassisDynamics`。旧 `kinematics.py` / `dynamics.py` 是兼容导出。DWA、手动控制和 `Simulator2D` 共用同一 NumPy 批量积分核心。实现参考用户原型 [ChassisDynamics](../assets/ChassisDynamics/chassis_sim_design.md)，保留原型的两类自由度、离散逆伺服和隐式阻力设计。
 
 ## 模型与指令
 
@@ -52,3 +52,9 @@ print(state.velocity, state.steering, result.force, result.torque, result.flags)
 `DynamicsConfig` 默认质量 20 kg、驱动力 / 制动力 50 / 70 N、偏航力矩 3 Nm、转向力矩 1 Nm、物理子步 ≤0.02 s。摩擦预算为 `μ*m*g`，扣除当前横向需求；差速同时分配左右轮的纵向力和偏航力矩。转角硬限位、最大轮速 / 车速是显式状态保护，可能放松舒适 jerk；相关诊断包括 `reference_limited`、`effort_limited`、`speed_hard_projection`、`steering_stop_reaction`、`linear_jerk_relaxed`、`angular_jerk_relaxed`、`lateral_envelope_exceeded`、`tire_envelope_exceeded`。
 
 这是一套低速、无侧滑的虚拟动力学。参考限速和摩擦分配不是实际瞬态包络不变性的证明；结果提供力、力矩、近似横向加速度、轮胎利用率和诊断。性能参数、模型限制和 DWA 必须与执行端配置一致。
+
+## 批量预测接口
+
+`plant.codec` 封装状态数组的列布局。`integrate(states, commands, dt)` 保持数组返回；传 `diagnostics=True` 得到 `(states, BatchDiagnostics)`，每类标记为 `(N,)`，可对应到具体候选。积分器本身不决定哪些限幅应淘汰候选。
+
+`ReachabilityEstimator` 直接调用这个积分器，不重写阻力或伺服方程。它记录 track 的经验响应范围，保留完整模型/策略命令域并补充响应锚点；不能把下周期实际状态范围当作速度伺服参考范围。物理基线覆盖两种模型及四种命令模式，见 `tests/test_dynamics_baseline.py`。

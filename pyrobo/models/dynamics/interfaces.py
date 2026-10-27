@@ -1,0 +1,19 @@
+from typing import Protocol
+import numpy as np
+
+
+class StateCodec(Protocol):
+    state_size: int
+
+    def pack(self, state) -> np.ndarray: ...
+    def unpack(self, values, source, dt): ...
+    def poses(self, states: np.ndarray) -> np.ndarray: ...
+    def velocities(self, states: np.ndarray) -> np.ndarray: ...
+    def stopped(self, states: np.ndarray) -> np.ndarray: ...
+
+
+class BatchDynamics(Protocol):
+    codec: StateCodec
+    config: object  # must expose the physical substep duration
+
+    def integrate(self, states, commands, dt, *, mode='track', diagnostics=False): ...

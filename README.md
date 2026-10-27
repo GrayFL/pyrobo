@@ -1,6 +1,6 @@
 # pyrobo
 
-面向机器人运动控制的 Python 库：原始点云地图 → 全局路径 → 可回退的航点进度 → 模型空间 DWA → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
+面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → 模型空间 DWA → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
 
 - **矩形车体**：任意长宽、朝向和纵向参考点偏移；提供 0.5 × 0.5 m、1 × 0.5 m 两个版型。全局规划、局部预测、路径验证和实体仿真都检查矩形。
 - **RRT-Connect** 与 **Voronoi + D* Lite**：直接在点云上生成有序航点，不默认栅格化或降采样。
@@ -35,7 +35,7 @@ clearance = 0.12 + 0.4 * model.minimum_turn_radius if isinstance(model, Ackerman
 planner = VoronoiConfig(clearance=clearance, time_budget=2.0)
 nav = Navigator(model=model, footprint=footprint, planner=planner)
 sim = Simulator2D(world, start, model=model, footprint=footprint,
-                  dynamics=nav.controller.plant.config)
+                  dynamics=nav.dynamics.config)
 cloud = world.point_cloud()
 
 for _ in range(1000):
@@ -52,7 +52,7 @@ for _ in range(1000):
 print(out.status, sim.collided)
 ```
 
-`Navigator()` 默认差速与 RRT-Connect。传 `model=Ackermann()` 时默认使用更长的预测时间、前视距离和 RRT 跟踪余量；显式传入的控制器、模型、动力学或规划配置按传入值使用。其他全局规划器也能通过 `DynamicWindow.step(..., path=...)` 与 `PathTracker` 接入。
+`Navigator()` 默认差速与 RRT-Connect。传 `model=Ackermann()` 时默认使用更长的预测时间、前视距离和 RRT 跟踪余量；显式传入的控制器、模型、动力学或规划配置按传入值使用。可以通过 `global_planner=` 和 `local_optimizer=` 注入其他算法；旧 `DynamicWindow.step(..., path=...)` 入口仍可使用。
 
 **输出是模型指令**：差速返回 `WheelCommand(left, right, mode)`，轮速单位 m/s；阿克曼返回 `AckermannCommand(speed, steering, mode)`，单位 m/s、rad。`Twist2D` 表示实测车体速度；旧代码读取 `out.command.linear/angular` 需迁移为模型指令。发送速度话题可用 `model.from_twist(Twist2D(...))`；阿克曼会拒绝零线速度的非零偏航要求。
 
@@ -69,6 +69,25 @@ print(out.status, sim.collided)
 | `no_path` | 暂无全局路径，返回制动指令；详见 `planner_status` |
 | `blocked` | 局部候选不可行，返回经检查的制动指令 |
 | `emergency_stop` | 预测制动碰撞或不能在预算内停住，`safe=False` |
+
+## 手动辅助与控制权
+
+```python
+from pyrobo import ControlMode, MotionPolicy, RobotObservation, Supervisor, Twist2D
+
+runtime = Supervisor(nav)
+runtime.set_goal(goal, sim.state.timestamp)
+runtime.set_mode(ControlMode.MANUAL)
+runtime.submit_teleop(Twist2D(.5, 0.), sim.state.timestamp,
+                      policy=MotionPolicy.TELEOP_AVOID)
+result = runtime.step(RobotObservation(sim.state, cloud, world.bounds, dt=.1))
+sim.step(result.command, .1)
+runtime.set_mode(ControlMode.AUTO)
+```
+
+`TELEOP_STOP` 只缩小纵向参考，保持差速角速度或阿克曼转角；`TELEOP_AVOID` 允许有界转向偏离，两者都禁止擅自加速或反向。默认手动请求 0.3 s 超时即制动。PAUSED 保留任务；ESTOP 锁存，必须显式 `release_estop()`，解除后进入 PAUSED。
+
+手动期间只维护导航进度，不额外计算自动 DWA。完整底盘状态和历史路径跨模式保留。最终安全门独立复核实际下发命令的一周期运动和制动；无解、陈旧输入、模型/适配故障均返回停止原因与安全评估。`MotionResult.trajectory` 含相对时间、绝对时戳和制动尾段；兼容的 `NavigationOutput` 仍提供 PoseArray。
 
 ## 碰撞与坐标约定
 
@@ -89,12 +108,15 @@ python -m pyrobo.simulation --planner rrt_connect --model ackermann --footprint 
 python -m pyrobo.simulation --model differential --scenario handoff
 python -m pyrobo.simulation --model ackermann --scenario handoff --plot /tmp/pyrobo-handoff.png
 python -m examples.manual_control
+python -m examples.assisted_teleop --model both
 python -m pytest -q
 ```
 
 `detour` 展示交错墙绕行、两种全局规划器及两种车体。`handoff` 在导航中插入三秒手动倒车，再交回 DWA，展示路径进度回退；`manual_control` 展示速度话题适配、滑行、倒车和急停。`--plot` 保存路径、矩形车体、实测速度、转角、进度和力 / 力矩图。失败例程以非零退出码结束。
 
-进一步阅读：[运动学与动力学](pyrobo/README.md)、[DWA 与路径跟踪](pyrobo/control/dwa/README.md)、[RRT-Connect](pyrobo/planning/rrt_connect/README.md)、[Voronoi / D* Lite](pyrobo/planning/voronoi/README.md)、[仿真](pyrobo/simulation/README.md)、[例程](examples/README.md)、[开发上下文](PROJECT.md)。
+`assisted_teleop` 展示两种车型的无障碍、严格停障、辅助绕障和无可行制动场景。正式手动控制使用 `Supervisor.submit_teleop` 发送期望，由共享 DWA 求解；`run_navigation(control_input=...)` 可编排接管过程。旧 `command_override` 已弃用，仍受最终安全门约束。
+
+进一步阅读：[架构与 API 迁移](docs/architecture.md)、[性能记录](benchmarks/README.md)、[运动学与动力学](pyrobo/README.md)、[DWA 与路径跟踪](pyrobo/control/dwa/README.md)、[RRT-Connect](pyrobo/planning/rrt_connect/README.md)、[Voronoi / D* Lite](pyrobo/planning/voronoi/README.md)、[仿真](pyrobo/simulation/README.md)、[例程](examples/README.md)、[开发上下文](PROJECT.md)。
 
 ## 范围
 

@@ -1,21 +1,6 @@
 """Shared result and polyline output for continuous-space planners."""
-from dataclasses import dataclass, field
-
 import numpy as np
-from graphmap.pose import PoseArray
-
-
-@dataclass(frozen=True)
-class PlanResult:
-    path: PoseArray
-    status: str
-    extensions: int
-    elapsed: float
-    diagnostics: dict = field(default_factory=dict)
-
-    @property
-    def success(self) -> bool:
-        return self.status == "success"
+from ..core.results import PlanResult
 
 
 def densify_path(xy: np.ndarray, spacing: float) -> np.ndarray:

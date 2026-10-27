@@ -9,7 +9,7 @@ from pyrobo.simulation import Simulator2D, demo_world
 world, start, goal = demo_world()
 nav = Navigator(model=Ackermann(), footprint=Footprint.long())
 sim = Simulator2D(world, start, model=nav.model, footprint=nav.footprint,
-                  dynamics=nav.controller.plant.config)
+                  dynamics=nav.dynamics.config)
 cloud = world.point_cloud()
 for _ in range(1000):
     s = sim.state
@@ -35,7 +35,9 @@ for _ in range(1000):
 
 ## 实验日志与手动接管
 
-`run_navigation(world, start, goal, navigator=..., dt=0.1, max_steps=1000, command_override=...)` 重置导航器并运行闭环。回调 `command_override(step_index, chassis_state, navigation_output)` 返回原生模型指令即可接管，返回 `None` 交还 DWA。导航器持续收到实测状态，路径进度不会在交接时丢失。
+`run_navigation(world, start, goal, navigator=..., dt=0.1, max_steps=1000, control_input=...)` 重置导航器并通过 Supervisor 运行闭环。回调 `control_input(step_index, chassis_state, supervisor)` 调用 `set_mode`、`submit_teleop` 来切换控制权和提交期望。手动时只维护导航进度，只有当前来源的意图交给 DWA；交还 AUTO 不重置状态或路径。
+
+旧 `command_override(step_index, chassis_state, navigation_output)` 为弃用的实验兼容接口，会发出 DeprecationWarning；旧调用仍先运行自动优化，然后由 SafetyGuard 独立检查覆盖命令，不能绕过安全检查。新代码使用 control_input。
 
 返回 `SimulationRun`，含 `poses`、`timestamps`、实测 `velocities` / `steering`、导航 `outputs`、实际选定的 `commands`、`manual` 来源标记，以及上一执行周期末的力 / 力矩 `efforts`。每条日志在输入时间戳对齐；最后一条命令可能因到达 / 步数预算而未执行。遇到到达、紧急状态、实体碰撞或步数预算结束，务必检查 `arrived` / `collided`，预算耗尽不算到达。
 

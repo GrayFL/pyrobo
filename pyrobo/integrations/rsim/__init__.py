@@ -1,6 +1,2 @@
-"""Optional RSim navigation graph. CPU components should use ProcessPlacement."""
-from .config import StackConfig
-from .components import GlobalPlanning, LocalNavigation, Execution
-from .stack import NavigationStack
-
-__all__ = ['StackConfig', 'NavigationStack', 'GlobalPlanning', 'LocalNavigation', 'Execution']
+"""Compatibility import; use pyrobo.rsim (removed in 0.2)."""
+from pyrobo.rsim import *  # noqa: F401,F403

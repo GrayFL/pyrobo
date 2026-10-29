@@ -214,7 +214,8 @@ class Execution(Component):
             return  # Downstream CommandSink expires independently without output.
         started = perf_counter()
         host_now = monotonic()
-        now = host_now if self.config.clock == CLOCK else state_frame.stamp_ns/1e9
+        environment_clock = self.config.clock != CLOCK
+        now = state_frame.stamp_ns/1e9 if environment_clock else host_now
         current_episode = episode(state_frame)
         environment_version = (source_session(state_frame), current_episode)
         if self.environment_episode is not None and environment_version != self.environment_episode:
@@ -234,21 +235,45 @@ class Execution(Component):
             if (data.get('session', ''), data.get('episode', 0)) != environment_version:
                 self.executor.rejected += 1
                 self.executor.last_rejection = 'proposal_episode_mismatch'
-            elif (not 0 <= host_now*1e9-data.get('source_host_ns', int(data['issued_at']*1e9))
+            elif environment_clock and (not 0 <= host_now*1e9-data.get('source_host_ns', int(data['issued_at']*1e9))
                     <= self.config.max_result_age*1e9
                     or data.get('host_deadline_ns', int(data['valid_until']*1e9)) <= host_now*1e9):
                 self.executor.rejected += 1
                 self.executor.last_rejection = 'proposal_stale'
+            elif environment_clock and (data.get('host_deadline_ns', int(data['valid_until']*1e9))
+                                        -host_now*1e9 < actuator_horizon*1e9):
+                self.executor.rejected += 1
+                self.executor.last_rejection = 'proposal_horizon_too_short'
             else:
                 proposal = decode_proposal(data, self.executor.guard.space)
                 proposal_host_deadline_ns = data.get('host_deadline_ns', int(data['valid_until']*1e9))
-        if host_now*1e9 >= self.active_host_deadline_ns:
+        # The original host-clock executor revalidates each short actuator
+        # lease against fresh state. Environment clocks additionally require a
+        # host bound, since source time may pause without the actuator pausing.
+        # Do not send a moving command whose lease cannot cover the next full
+        # downstream interval. An independent, freshly checked stop preserves
+        # the original proposal deadline without forcing a healthy actuator to
+        # alternate between deadman estop and track on every late result.
+        if environment_clock and self.active_host_deadline_ns-host_now*1e9 < actuator_horizon*1e9:
             self.executor.active = None
+        # LeaseExecutor extrapolates source measurements through its record of
+        # sent commands. Its observation.dt must be the lease actually emitted,
+        # including a shortened proposal deadline; recording the nominal period
+        # would predict motion after the provider had already stopped.
+        lease_limits = []
+        if environment_clock and self.executor.active is not None:
+            lease_limits.append(self.active_host_deadline_ns)
+        if environment_clock and proposal is not None:
+            lease_limits.append(proposal_host_deadline_ns)
+        if lease_limits:
+            remaining = (min(lease_limits)-host_now*1e9)/1e9
+            if remaining > 0:
+                observation = replace(observation, dt=min(actuator_horizon, remaining))
         host_stale = not 0 <= host_now*1e9-source_host_ns(state_frame) <= self.config.safety.max_state_age*1e9
         map_stale = (not map_frame.data.get('static', False)
                      and not 0 <= host_now*1e9-source_host_ns(map_frame) <= self.config.safety.max_cloud_age*1e9)
         accepted_before = self.executor.accepted
-        if self.config.clock != CLOCK and (host_stale or map_stale):
+        if environment_clock and (host_stale or map_stale):
             self.executor.active = None
             result = self.executor.guard.stop(observation, reason='state_stale' if host_stale else 'map_stale',
                                               assessment=SafetyAssessment.INPUT_STALE)
@@ -262,8 +287,8 @@ class Execution(Component):
                   'issued_at': now, 'task_epoch': mission['epoch'], 'episode': current_episode}
         # This short downstream lease is separate from the optimizer lease. It
         # expires at the actuator if the execution process itself stalls/dies.
-        deadline_ns = int((host_now+actuator_horizon)*1e9)
-        if result.command.mode == 'track':
+        deadline_ns = int((host_now+observation.dt)*1e9)
+        if environment_clock and result.command.mode == 'track' and self.executor.active is not None:
             # A forwarded decision cannot extend its source/proposal evidence.
             deadline_ns = min(deadline_ns, self.active_host_deadline_ns)
         envelope = CommandEnvelope(packet, 'pyrobo:execution', self.epoch, self.sequence, deadline_ns)

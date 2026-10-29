@@ -29,15 +29,18 @@ class NavigationInputs(Component):
         self.task('convert_state', self.convert, hz=1/self.config.execution_period)
 
     async def convert(self):
-        frame = latest(self.device.state)
-        if frame is None or frame.sequence == self.previous:
+        poses = {(p.stamp_ns, episode(p), source_session(p)): p for p in self.device.pose.frames}
+        # Separate transport ports can remain one sample apart. Consume the
+        # newest complete source pair, preserving its original age, rather than
+        # starving forever while waiting for the latest state to catch a pose.
+        for frame in reversed(self.device.state.frames):
+            if frame.sequence <= self.previous:
+                return
+            pose_frame = poses.get((frame.stamp_ns, episode(frame), source_session(frame)))
+            if pose_frame is not None:
+                break
+        else:
             return
-        poses = self.device.pose.frames
-        pose_frame = next((p for p in reversed(poses)
-                           if p.stamp_ns == frame.stamp_ns and episode(p) == episode(frame)
-                           and source_session(p) == source_session(frame)), None)
-        if pose_frame is None:
-            return  # A separate transport port may arrive one event-loop turn later.
         if frame.clock != self.config.clock or pose_frame.clock != self.config.clock:
             raise ValueError('device clock does not match navigation clock')
         data, pose = frame.data, pose_frame.data
@@ -112,7 +115,8 @@ class NavigationCommandOutput(Component):
             return
         self.previous = frame.sequence
         state = latest(self.device.state)
-        if state is None or frame.data.value.get('episode', 0) != episode(state):
+        if (state is None or frame.data.value.get('episode', 0) != episode(state)
+                or source_session(frame) != source_session(state)):
             return
         command = self.convert_envelope(frame.data)
         if command.deadline_ns <= monotonic_ns():

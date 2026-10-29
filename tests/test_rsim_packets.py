@@ -63,6 +63,20 @@ def test_reply_from_previous_task_cannot_be_consumed_after_reset():
     np.testing.assert_array_equal(result.path.position[-1, :2], [0, 2])
 
 
+def test_new_map_source_session_invalidates_reused_stamp_and_revision():
+    reader = ObservationReader(ChassisDynamics(DifferentialDrive()))
+    data = {'points': np.array([[1., 2., 3.]]), 'frame': 'world', 'revision': 1,
+            'bounds': [-4., 4., -4., 4.], 'static': False}
+    previous = frame(data)
+    previous.metadata = {'session': 'previous-process', 'episode': 0}
+    first, _ = reader.map(previous)
+    restarted = frame({**data, 'points': np.array([[2., 3., 1.]])})
+    restarted.metadata = {'session': 'new-process', 'episode': 0}
+    second, _ = reader.map(restarted)
+    assert second is not first
+    np.testing.assert_array_equal(second.points, restarted.data['points'])
+
+
 def test_operating_command_limit_preserves_actual_measured_overshoot():
     from dataclasses import replace
     from pyrobo import Twist2D

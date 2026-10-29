@@ -31,7 +31,7 @@ class ObservationReader:
         data = frame.data
         revision = data['revision']
         stamp = None if data.get('static', False) else frame.stamp_ns/1e9
-        key = (revision, stamp, getattr(frame, 'metadata', {}).get('episode', 0))
+        key = (revision, stamp, getattr(frame, 'metadata', {}).get('episode', 0), source_session(frame))
         if key != self._map_key:
             self.cloud = PointCloud(data['points'], frame=data['frame'], timestamp=stamp)
             self.bounds = Bounds2D(*data['bounds'])

@@ -74,6 +74,9 @@ conversion boundaries. State must supply `linear_x`, `angular_z`, `acceleration`
 `yaw_acceleration`, `frame`, `episode`, `step_index` and `pose_kind`. Missing
 measurements fail explicitly. Input conversion uses the existing StateCodec; it
 never fabricates zero velocity or accesses an engine's live truth object.
+When ports arrive separately, conversion selects the newest complete pair from
+bounded histories and preserves that pair's original source age. Command output
+checks both source session and episode, including restarts that reuse episode 0.
 
 | Signal | Data |
 | --- | --- |
@@ -110,6 +113,12 @@ Local navigation processes each state once. Global replies and proposals are
 associated with mission, map, source session and episode; stale results are not
 adopted after reset. Execution keeps a short host lease and independently checks
 source freshness. Pausing source time cannot keep a previous command alive.
+The default host clock retains the existing executor behavior: each short
+actuator lease is a new decision checked against current state. For environment
+clocks, a motion proposal also needs enough host lifetime for the full actuator
+interval. Otherwise execution requests a newly checked stop before expiry.
+Forwarded motion never extends its proposal deadline, and the executor's sent
+history records the actual emitted interval.
 Memory reset stops commands, retires old controller epochs, isolates histories
 without reusing sequence cursors, resets the physical time to zero, and publishes
 a new episode. `source.reset()` is a local management operation, not remote RPC.

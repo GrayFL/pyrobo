@@ -1,5 +1,7 @@
 """Composition configuration shared by local and process deployments."""
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import hashlib
+import json
 import math
 
 from pyrobo import (ChassisDynamics, DWAConfig, DWAEngine, DifferentialDrive, Footprint, NavigationConfig,
@@ -8,6 +10,28 @@ from pyrobo.geometry.cache import SnapshotIndex
 from pyrobo.models.dynamics.config import DynamicsConfig
 from pyrobo.models.kinematics import command_space_for
 from pyrobo.planning import AdaptiveClearancePlanner, RRTConnect, RRTConnectConfig, VoronoiConfig, VoronoiPlanner
+
+
+class LimitedCommandSpace:
+    """Restrict reference commands without changing measured-state/model limits."""
+    def __init__(self, space, speed_limit=None, yaw_limit=None):
+        self._space, self.speed_limit, self.yaw_limit = space, speed_limit, yaw_limit
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, '_space'), name)
+
+    def bounds(self):
+        lo, hi = self._space.bounds()
+        if self.speed_limit is not None:
+            lo[0], hi[0] = max(lo[0], -self.speed_limit), min(hi[0], self.speed_limit)
+        if self.yaw_limit is not None:
+            lo[1], hi[1] = max(lo[1], -self.yaw_limit), min(hi[1], self.yaw_limit)
+        return lo, hi
+
+    def to_native_batch(self, search):
+        native, valid = self._space.to_native_batch(search)
+        lo, hi = self.bounds()
+        return native, valid & ((search >= lo-1e-10) & (search <= hi+1e-10)).all(axis=1)
 
 
 @dataclass(frozen=True)
@@ -25,10 +49,18 @@ class StackConfig:
     max_result_age: float = .25
     adaptive_clearance: bool = True
     clock: str = 'host:monotonic'
+    command_speed_limit: float | None = None
+    command_yaw_limit: float | None = None
 
     def __post_init__(self):
         if not isinstance(self.clock, str) or not self.clock:
             raise ValueError('clock must explicitly identify the environment time domain')
+        for name in ('command_speed_limit', 'command_yaw_limit'):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(f'{name} must be finite and positive when supplied')
+        if self.command_yaw_limit is not None and not command_space_for(self.model).can_spin:
+            raise ValueError('command_yaw_limit requires a differential-drive model')
         if self.controller is None:
             car = not command_space_for(self.model).can_spin
             object.__setattr__(self, 'controller', DWAConfig(prediction_time=2.4 if car else 1.8,
@@ -63,9 +95,19 @@ class StackConfig:
             return AdaptiveClearancePlanner(factory, self.planner, self.footprint)
         return factory(self.planner, self.footprint)
 
+    def fingerprint(self):
+        data = {'configuration': asdict(self),
+                'model_type': f'{type(self.model).__module__}.{type(self.model).__qualname__}',
+                'planner_type': f'{type(self.planner).__module__}.{type(self.planner).__qualname__}'}
+        return hashlib.sha256(json.dumps(data, sort_keys=True, allow_nan=False,
+                                        separators=(',', ':')).encode()).hexdigest()
+
     def control(self):
         plant, index = ChassisDynamics(self.model, self.dynamics), SnapshotIndex()
+        space = command_space_for(self.model)
+        if self.command_speed_limit is not None or self.command_yaw_limit is not None:
+            space = LimitedCommandSpace(space, self.command_speed_limit, self.command_yaw_limit)
         optimizer = DWAEngine(self.controller, self.footprint, model=self.model, dynamics=plant,
-                              index=index, input_limits=self.safety)
+                              command_space=space, index=index, input_limits=self.safety)
         guard = SafetyGuard(plant, optimizer.command_space, self.footprint, index=index, config=self.safety)
         return plant, index, optimizer, guard

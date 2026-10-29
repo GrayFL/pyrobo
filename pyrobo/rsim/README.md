@@ -58,6 +58,14 @@ explicitly projected onto the plane; `--strict-planar-pose` rejects 3D poses
 instead. Reports identify the localization's `pose_kind`; ground truth is not a
 SLAM or localization accuracy result. `--map` supplies a different fixed map.
 
+The example uses `command_speed_limit=.45` m/s and `command_yaw_limit=.75` rad/s
+for both providers. These optional StackConfig limits restrict candidate command
+references while preserving the model's larger measured-state envelope. They
+participate in configuration fingerprints and process serialization. Physical
+overshoot is measured unchanged; no input velocity is clipped to an operating
+limit. A state outside the configured model envelope is an explicit error and
+the consumer stops. Choose limits from the actual robot's operating envelope.
+
 ## Data and command boundaries
 
 The public pose and state must have the same source stamp, clock, session,

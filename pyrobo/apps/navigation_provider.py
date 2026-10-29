@@ -54,7 +54,8 @@ async def navigate(device, *, map_data, goal=(.8, 0., 0.), config=None,
     """The same consumer graph for every compatible provider; no backend branch."""
     if execution not in ('local', 'thread', 'process'):
         raise ValueError('execution must be local, thread or process')
-    config = config or StackConfig(clock=device.pose.clock, footprint=Footprint(.6, .6))
+    config = config or StackConfig(clock=device.pose.clock, footprint=Footprint(.6, .6),
+                                  command_speed_limit=.45, command_yaw_limit=.75)
     mission = NavigationMission(map_data, goal, clock=config.clock)
     inputs = NavigationInputs(device, mission.maps, mission.missions, config,
                               planar_projection=planar_projection)
@@ -72,6 +73,9 @@ async def navigate(device, *, map_data, goal=(.8, 0., 0.), config=None,
                        placement=placement):
         while monotonic()-started < duration:
             await asyncio.sleep(.03)
+            for component in (inputs, navigation.local, navigation.global_planning, navigation.execution, output):
+                if component._failure is not None:
+                    raise RuntimeError(f'navigation component failed: {type(component).__name__}') from component._failure
             rows = device.state.frames
             if not rows or rows[-1].sequence == previous or not device.pose.frames:
                 continue
@@ -118,6 +122,7 @@ async def navigate(device, *, map_data, goal=(.8, 0., 0.), config=None,
     return {'arrived': arrived, 'collided': collided, 'elapsed_host_s': monotonic()-started,
             'localization': pose_kind, 'planar_projection': planar_projection, 'map': 'fixed_prebuilt',
             'clock': config.clock, 'execution': execution, 'goal': list(goal),
+            'command_limits': {'speed_mps': config.command_speed_limit, 'yaw_radps': config.command_yaw_limit},
             'minimum_boundary_clearance_m': minimum_boundary_clearance if samples else None,
             'samples': samples, 'pids': {key: sorted(value) for key, value in pids.items()},
             'last_status': diagnostics.get('status'), 'last_reason': diagnostics.get('reason'),

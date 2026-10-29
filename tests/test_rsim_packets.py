@@ -61,3 +61,18 @@ def test_reply_from_previous_task_cannot_be_consumed_after_reset():
     result = bridge.plan(pose2d(0, 0), pose2d(0, 2), world, bounds)
     assert result.success and bridge.pending is None
     np.testing.assert_array_equal(result.path.position[-1, :2], [0, 2])
+
+
+def test_operating_command_limit_preserves_actual_measured_overshoot():
+    from dataclasses import replace
+    from pyrobo import Twist2D
+    from pyrobo.rsim import StackConfig
+    config = StackConfig(command_speed_limit=.45, command_yaw_limit=.75)
+    assert config.fingerprint() != replace(config, command_speed_limit=.5).fingerprint()
+    plant, _, optimizer, _ = config.control()
+    state = ChassisState(pose2d(0, 0), Twist2D(.47, .2))
+    packed = plant.codec.pack(state)
+    assert packed[3] == .47  # Do not clip a physical measurement to a command bound.
+    candidates = np.array([[.45, .75], [.46, 0.], [.4, .76]])
+    _, valid = optimizer.command_space.to_native_batch(candidates)
+    np.testing.assert_array_equal(valid, [True, False, False])

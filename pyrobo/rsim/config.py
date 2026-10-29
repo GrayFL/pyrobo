@@ -24,8 +24,11 @@ class StackConfig:
     command_horizon: float = .3
     max_result_age: float = .25
     adaptive_clearance: bool = True
+    clock: str = 'host:monotonic'
 
     def __post_init__(self):
+        if not isinstance(self.clock, str) or not self.clock:
+            raise ValueError('clock must explicitly identify the environment time domain')
         if self.controller is None:
             car = not command_space_for(self.model).can_spin
             object.__setattr__(self, 'controller', DWAConfig(prediction_time=2.4 if car else 1.8,

@@ -25,7 +25,8 @@ def test_config_precedence_nested_drag_and_inactive_model_tables(tmp_path):
     assert session.model.wheelbase == .7 and data['teleop']['speed_limit'] == .5
     assert session.sim.dynamics.longitudinal_drag.quadratic == 3.
     assert session.nav.optimizer.config.prediction_time == 2.4
-    assert type(session.nav.planner).__name__ == 'VoronoiPlanner'
+    assert type(session.nav.planner).__name__ == 'AdaptiveClearancePlanner'
+    assert session.nav.planner.factory.__name__ == 'VoronoiPlanner'
 
 
 @pytest.mark.parametrize('override', ['backend.local_optimizer="unknown"', 'dwa.angular_sampels=9',

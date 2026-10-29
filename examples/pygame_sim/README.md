@@ -67,12 +67,14 @@ python -m examples.pygame_sim --config examples/configs/pygame.toml \
 | `dynamics` | DynamicsConfig；三类 drag 可用嵌套表配置 |
 | `dwa` | DWAConfig 全部参数；含采样数、预测时长、代价、批大小 |
 | `rrt_connect` / `voronoi` | 相应全局规划器配置，包含预算、间距、种子等 |
-| `navigation` | NavigationConfig：lookahead / goal_tolerance / yaw_tolerance |
+| `navigation` | NavigationConfig：lookahead / goal_tolerance / yaw_tolerance / goal_approach_distance |
 | `safety` | SafetyConfig：状态 / 地图年龄、周期、制动预算 |
 | `teleop` | 策略、速度上限、转向上限、TTL 与最大允许偏离 |
 | `joystick` | 启用、设备索引、轴号、反向、死区、使能按钮 |
 
 省略 DWA 预测时间 / 前视距离时沿用车型默认值：差速 1.8 s / 1.3 m，阿克曼 2.4 s / 1.6 m。省略全局 clearance 时保留车型转弯余量。速度与力的实际限制由模型和 dynamics 决定；DWA 的配置不直接覆盖显式构造的物理参数。
+
+`navigation.goal_approach_distance` 省略时使用车型默认终点入射长度，正数指定长度（m），`0` 关闭入射段。阿克曼终点前空间不足时可缩短，但仍须通过矩形碰撞检查。全局 `clearance` 是叠加在车体安全边距之外的额外间距，窄道中可单独调整。
 
 全局规划软预算默认为 RRT-Connect 0.5 s、Voronoi 2 s。预算过小可能显示 `budget_exhausted` 并等待重试；可提高对应 `time_budget`。规划在工作线程进行，期间窗口继续响应输入。
 

@@ -152,12 +152,39 @@ class Navigator:
         goal, current = planar_state(self.goal), planar_state(o.chassis.pose)
         planning_goal, approach = self.goal, None
         distance = self.command_space.goal_approach_distance(self.settings.lookahead)
+        if distance > 0 and self.settings.goal_approach_distance is not None:
+            distance = self.settings.goal_approach_distance
         if distance > 0:
             direction = np.array([np.cos(goal[2]), np.sin(goal[2])])
+            if self.settings.goal_approach_distance is None:
+                world = self.index.get(o.obstacles)
+                body = getattr(self.planner, 'safety_footprint', self.footprint)
+                if not world.rectangle_segment_free(goal[:2]-distance*direction, goal[:2], body, o.bounds):
+                    # For fixed goal heading, shorter entry segments are nested
+                    # subsets of the same swept rectangle. Find available space
+                    # without weakening the body margin or using a disk proxy.
+                    lo, hi = 0., distance
+                    for _ in range(14):
+                        middle = (lo+hi)/2
+                        if world.rectangle_segment_free(goal[:2]-middle*direction, goal[:2], body, o.bounds):
+                            lo = middle
+                        else:
+                            hi = middle
+                    fitted = max(0., lo-self.footprint.margin)
+                    if fitted >= max(self.settings.goal_tolerance, self.footprint.length/2):
+                        distance = fitted
             offset = current[:2] - goal[:2]
             on_approach = (-distance <= offset @ direction <= 0 and
                 abs(direction[0]*offset[1] - direction[1]*offset[0]) < self.settings.goal_tolerance and
-                abs(float(wrap_angle(current[2] - goal[2]))) < self.settings.yaw_tolerance)
+                abs(float(wrap_angle(current[2] - goal[2]))) < np.pi/2)
+            if self.settings.goal_approach_distance is None:
+                # Once inside the terminal approach region, do not reintroduce
+                # an entry point behind the car. Let the planner connect the
+                # measured pose to the goal (with all normal collision checks).
+                # An explicitly requested entry length remains authoritative.
+                facing = np.array([np.cos(current[2]), np.sin(current[2])])
+                on_approach |= (np.linalg.norm(offset) < distance and offset @ direction <= 0
+                               and offset @ facing < 0 and facing @ direction > 0)
             if not on_approach:
                 approach = goal[:2] - distance*direction
                 planning_goal = pose2d(*approach, goal[2], frame=o.frame)
@@ -170,7 +197,8 @@ class Navigator:
         self._last_plan, self._replanned = o.timestamp, True
         self._planner_status = plan.status if plan else 'invalid_goal_approach'
         if plan is not None:
-            self._planning = {**plan.diagnostics, 'elapsed': plan.elapsed, 'extensions': plan.extensions}
+            self._planning = {**plan.diagnostics, 'elapsed': plan.elapsed, 'extensions': plan.extensions,
+                              'goal_approach_distance': distance}
             poses = plan.path.poses if isinstance(plan.path, Path) else plan.path
             Path(poses)
             if poses.wrd_frame != o.frame:

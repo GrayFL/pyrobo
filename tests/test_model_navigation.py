@@ -32,6 +32,59 @@ def test_ackermann_dwa_samples_steering_and_never_publishes_a_spin_twist():
     assert result.mode != "turning"
 
 
+@pytest.mark.parametrize('batch_size', [0, 7, 31])
+def test_stationary_ackermann_tied_trajectories_prepare_the_requested_steering(batch_size):
+    dwa = DynamicWindow(DWAConfig(batch_size=batch_size, prediction_time=2.4, lookahead=1.6),
+                        model=Ackermann(max_speed=.225))
+    state = ChassisState(pose2d(0, 0))
+    # The first carrot lies to the left. Moving immediately is locally worse
+    # than stopping for this speed-limited vehicle, but all zero-speed steering
+    # samples have identical XY cost.
+    result = dwa.step(state.pose, state.velocity, pose2d(1, 3, np.pi/2),
+                      path_poses([[0, 0], [-.3, 1.1], [1, 3]]),
+                      PointObstacles(PointCloud(np.empty((0, 2)))), Bounds2D(-5, 5, -5, 5), .1, chassis=state)
+    assert result.safe and result.command.speed == 0.
+    assert result.command.steering == pytest.approx(dwa.model.max_steering)
+    actual = dwa.plant.step(state, result.command, .1).state
+    assert actual.steering > 0 and actual.velocity.angular == 0.
+
+
+@pytest.mark.parametrize('model', [DifferentialDrive(), Ackermann()])
+@pytest.mark.parametrize('lookahead', [.6, 1.3, 1.6])
+def test_clear_straight_cruise_is_not_capped_by_steering_lookahead(model, lookahead):
+    dwa = DynamicWindow(DWAConfig(prediction_time=2.4, lookahead=lookahead), model=model)
+    state = ChassisState(pose2d(0, 0), Twist2D(.8, 0.))
+    result = dwa.step(state.pose, state.velocity, pose2d(15, 0), path_poses([[0, 0], [15, 0]]),
+                      PointObstacles(PointCloud(np.empty((0, 2)))), Bounds2D(-5, 20, -5, 5), .1, chassis=state)
+    native = model.encode_command(result.command)[None]
+    speed = dwa.command_space.from_native_batch(native)[0, 0]
+    assert result.safe and speed >= .85
+
+
+def test_ackermann_corrects_small_heading_error_inside_goal_region():
+    model = Ackermann()
+    world = World2D(Bounds2D(-4, 4, -4, 4))
+    run = run_navigation(world, pose2d(.03, 0, .15), pose2d(0, 0, 0),
+                         navigator=Navigator(model=model), max_steps=160)
+    assert run.arrived and not run.collided, run.summary()
+    assert abs(planar_state(run.poses[-1])[2]) < .1
+    assert all(o.safe for o in run.outputs)
+
+
+def test_differential_replan_can_reverse_the_requested_spin_without_a_full_circle():
+    from pyrobo.core import MotionPolicy, MotionRequest, Path, RobotObservation
+    engine = DynamicWindow(model=DifferentialDrive())
+    obs = RobotObservation(ChassisState(pose2d(0, 0), Twist2D(0., .4)),
+                           PointCloud(np.empty((0, 2))), Bounds2D(-5, 5, -5, 5))
+    left = MotionRequest(MotionPolicy.NAVIGATION, 0., goal=pose2d(0, 3),
+                         path=Path(path_poses([[0, 0], [0, 3]])), local_target=pose2d(0, 1.3))
+    right = MotionRequest(MotionPolicy.NAVIGATION, 0., goal=pose2d(0, -3),
+                          path=Path(path_poses([[0, 0], [0, -3]])), local_target=pose2d(0, -1.3))
+    assert engine._prepare(obs, left).turn_direction > 0
+    context = engine._prepare(obs, right)
+    assert context.mode == 'turning' and context.turn_direction < 0 and context.desired[1] < 0
+
+
 @pytest.mark.parametrize("model", [DifferentialDrive(), Ackermann()])
 def test_manual_reverse_then_dwa_restores_progress_and_arrives(model):
     world = World2D(Bounds2D(-2, 9, -3, 3))

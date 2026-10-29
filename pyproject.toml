@@ -11,9 +11,10 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.26.4", "scipy>=1.17"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "nbformat>=5", "nbclient>=0.10", "ipykernel>=6"]
+dev = ["pytest>=8", "nbformat>=5", "nbclient>=0.10", "ipykernel>=6", "httpx>=0.28"]
 examples = ["matplotlib>=3.8", "ipython>=8", "ipywidgets>=8"]
 interactive = ["pygame>=2.6.1"]
+web = ["fastapi>=0.115", "uvicorn>=0.30", "websockets>=13"]
 
 [tool.setuptools.packages.find]
 include = ["pyrobo*"]

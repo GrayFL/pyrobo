@@ -65,6 +65,8 @@ runtime.set_mode(ControlMode.AUTO)  # 不重置速度、转角、加速度或历
 
 若需要替换算法，传 `Navigator(global_planner=..., local_optimizer=..., model=..., dynamics=...)`。全局规划器只需实现 `plan(start, goal, collision_world, bounds) -> PlanResult`，局部优化器实现 `optimize(observation, request) -> MotionResult`。`reset()` 为可选生命周期能力。共享模型、矩形和物理参数须一致；`NavigationConfig` 可独立控制前视和到达容差，默认从兼容的 DWA 配置取值。
 
+`NavigationConfig.goal_approach_distance` 可独立设置阿克曼终点沿目标朝向的直线入射长度（m）。`None` 沿用车型根据前视与转弯半径计算的默认值，正数显式指定长度，`0` 关闭该入射段；差速车型不添加入射段。显式长度仍通过相同的矩形扫掠碰撞检查，缩短长度不保证任意停车姿态可达。全局规划器 `clearance` 是额外规划间距，会叠加在 `Footprint.margin` 与点半径之外；窄道应分别配置这两种边距。
+
 ## 三种策略的硬约束
 
 | 策略 | 纵向搜索域 | 角向参考 | 优化依据 |
@@ -129,3 +131,11 @@ python -m scripts.benchmark_control --output benchmarks/after.json
 ```
 
 重构前的动力学数值保存在 `tests/data/dynamics_baseline.npz`，测试不在运行时重新生成参考值。性能基线、比较口径与结果见 [benchmarks](../benchmarks/README.md)。
+
+## 异步导航集成
+
+`integrations/rsim` 是可选传输与部署组合，不进入核心导入链。NavigationStack 组合 GlobalPlanning、LocalNavigation、Execution；前两者可替换对应算法工厂，后者独立执行原生命令期限和实际制动检查。纯逻辑 `runtime.leases` 不依赖 RSim。
+
+全局请求和结果携带请求 ID、地图版本、任务 epoch，局部进程异步等待路线。状态源的原始采集时刻作为命令期限起点，发送 / 重用不续期。执行进程复核完整下游租期并基于已发命令预测允许延迟内的状态；超过观测年龄上限或缺少命令历史就制动。执行器仍须独立执行到期策略，以覆盖执行进程本身卡顿。
+
+各进程通过数组和显式字典通信，内部使用 graphmap Pose，点云每个快照独立缓存，历史有界。示例仿真按墙钟积分，不因全局或 DWA 卡顿暂停物理。端口契约、支持的 AUTO / PAUSED 范围及硬件误差边界见 [RSim README](../pyrobo/integrations/rsim/README.md)；实测而非硬实时承诺见[测试报告](../reports/navigation/README.md)。

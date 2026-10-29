@@ -6,6 +6,8 @@
 
 先检查起终点以及直达线段；直达失败时从两端生长随机树。交替扩展一棵树，再沿新节点反复连接另一棵树。找到连接后做随机快捷连接，最后按指定间距插值。插值只是路径输出密度，不是占据栅格。
 
+默认启用障碍表面的桥接采样：部分非目标采样尝试取邻近墙面点之间的中点，引导树进入窄通道。矩形姿态先检查候选中点，每条实际边仍检查平移和旋转；保留均匀采样，未生成有效中点时回退。它不是通道连通性证明，也不保证每种地图都更快。可用 `bridge_sampling=False` 做同预算对照。
+
 全局碰撞轮廓与 DWA 共用 `Footprint` 的实际矩形，并额外加入 `config.clearance` 跟踪余量。直线平移的扫掠体是加长的定向矩形，按原始点到矩形的距离和矩形边界检查；不是把矩形替换成外接圆。转角按旋转矩形的区间运动上界自适应细分，未能证明安全的区间保守拒绝。
 
 起终点按实际 yaw 验证。两棵树记录各自入射 / 出射朝向，扩展检查父节点的旋转；连接、快捷连接和输出完整路径均检查转角，不能通过删掉航点切进障碍。非对称参考点偏移的边检查两个方向。直线窄通道不再因车长的外接圆半径被直接排除。
@@ -33,6 +35,7 @@ print(result.status, result.path.position)
 | `path_spacing` | 0.15 m | 输出相邻路径点的最大距离 |
 | `clearance` | 0.12 m | 在矩形安全边距之外的跟踪余量 |
 | `seed` | 7 | 每个实例的随机数种子 |
+| `bridge_sampling` | True | 点云表面桥接偏置，保留均匀采样 |
 
 树最近邻使用 NumPy 精确扫描，适合预算内的小树；障碍点查询使用 SciPy KD-tree。每次调用新建树，失败重试会继续随机数序列；`reset()` 恢复种子。相同种子且不触发时间截止时可复现，真实计时截止可能导致不同路径。
 
@@ -41,4 +44,6 @@ print(result.status, result.path.position)
 时间预算不是硬截止：初始检查、一次树扩展、输出整理和 Python 调度仍有开销。复杂任务可增大预算或在上层异步运行全局规划。狭窄通道可能需要面向矩形 SE(2) 的后续规划器，不能通过缩小真实车体来绕过几何约束。
 
 参考：[RRT-Connect 官方文档及原论文 DOI](https://ompl.kavrakilab.org/core/classompl_1_1geometric_1_1RRTConnect.html)、[OMPL 规划终止与可行性说明](https://ompl.kavrakilab.org/planners.html)。未引入 OMPL 二进制依赖，代码为针对本库接口的独立实现。
+
+桥接采样思路参考 [Bridge Test](https://adacomp.org/wp-content/uploads/2016/01/icra03.pdf)，这里按原始点云表面及矩形方向实现，不使用占据栅格。`PlanResult.diagnostics['bridge_samples']` 记录有效偏置样本数；重复试验见[导航基准](../../../examples/navigation_benchmark/README.md)。
 

@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#162a34" />
+    <title>Pyrobo · 运动实验室</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23147d73'/%3E%3Ctext x='8' y='24' fill='white' font-size='24' font-family='sans-serif'%3EP%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <span class="brand-mark">P</span>
+        <div>
+          <strong>PYROBO <span>运动实验室</span></strong
+          ><small>绘制环境，探索运动</small>
+        </div>
+      </div>
+      <div class="file-actions">
+        <button id="new-scene">新建</button
+        ><button id="library-open">场景库</button
+        ><button id="import-button">导入 JSON</button
+        ><button id="export">导出</button
+        ><button id="save" class="primary">保存场景</button>
+      </div>
+      <input
+        id="import-file"
+        type="file"
+        accept=".json,application/json"
+        hidden
+      />
+    </header>
+    <div class="session-bar">
+      <div>
+        <span id="connection" class="badge">正在连接</span
+        ><button id="reconnect" hidden>重新连接</button
+        ><span class="muted desktop-only">每个窗口独立实验 · 场景库共享</span>
+      </div>
+      <div class="run-actions">
+        <button data-action="auto" class="primary" title="G">▶ 自动导航</button
+        ><button data-action="manual" title="M">手动</button
+        ><button data-action="paused" title="Space">暂停</button
+        ><button data-action="reset" title="Home">重置</button
+        ><button data-action="estop" class="danger" title="E">急停</button
+        ><button data-action="release" title="R">解除</button>
+      </div>
+    </div>
+    <main>
+      <aside class="tools panel">
+        <div class="section-label">环境编辑</div>
+        <div id="tools" class="tool-list">
+          <button data-tool="navigate" class="selected">
+            <b>↗</b>点击导航
+          </button>
+          <button data-tool="robot"><b>▣</b>放置车辆</button>
+          <button data-tool="goal"><b>◎</b>设置目标</button>
+          <button data-tool="rect"><b>▭</b>矩形障碍</button>
+          <button data-tool="brush"><b>〰</b>自由画墙</button>
+          <button data-tool="polyline"><b>⌁</b>折线墙</button>
+          <button data-tool="polygon"><b>⬠</b>多边形</button>
+          <button data-tool="erase"><b>⌫</b>删除障碍</button>
+          <button data-tool="pan"><b>✥</b>移动视图</button>
+        </div>
+        <button id="finish-polygon" hidden>完成多边形 ↵</button>
+        <label
+          >墙体宽度 <span class="unit">m</span
+          ><input
+            id="brush-width"
+            type="number"
+            value="0.3"
+            min="0.05"
+            max="3"
+            step="0.05"
+        /></label>
+        <div class="paired">
+          <button id="undo">撤销</button><button id="redo">重做</button>
+        </div>
+        <button id="clear-obstacles">清空障碍</button>
+        <div class="section-label">视图</div>
+        <div class="paired">
+          <button id="fit">适应地图</button
+          ><button id="points-toggle">点云预览</button>
+        </div>
+        <p class="help">
+          滚轮缩放 · 中键平移<br />摆放车辆或目标时拖动指定朝向。多边形逐点点击，回车完成。
+        </p>
+        <div class="key-hint">
+          <kbd>W A S D</kbd><span>手动接管</span><kbd>G</kbd
+          ><span>恢复导航</span><kbd>Space</kbd><span>暂停</span>
+        </div>
+      </aside>
+      <section class="workspace">
+        <div class="canvas-heading">
+          <div>
+            <strong id="scene-title">交错墙 · 绕行测试</strong
+            ><span id="edit-status" class="muted">已应用</span>
+          </div>
+          <div class="paired">
+            <button id="apply" class="primary">应用并重置</button>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="map" aria-label="交互地图画布"></canvas>
+          <div id="tool-hint" class="canvas-hint">
+            点击目标立即导航；拖动指定到达朝向
+          </div>
+          <div id="scale" class="scale">1 m</div>
+        </div>
+        <div class="legend">
+          <span><i class="route"></i>全局路径</span
+          ><span><i class="forecast"></i>局部预测</span
+          ><span><i class="trail"></i>行驶轨迹</span
+          ><span id="coordinates">X — / Y —</span>
+        </div>
+        <div id="message" role="status">
+          连接后即可开始。地图编辑完成后点击「应用并重置」。
+        </div>
+        <div class="telemetry">
+          <div><small>控制模式</small><strong id="mode">PAUSED</strong></div>
+          <div>
+            <small>线速度</small
+            ><strong><span id="speed">0.00</span><em>m/s</em></strong>
+          </div>
+          <div>
+            <small>转向角 / 角速度</small><strong id="turn">0° / 0.00</strong>
+          </div>
+          <div>
+            <small>模拟时间 / 控制耗时</small
+            ><strong id="timing">0 s / 0 ms</strong>
+          </div>
+        </div>
+        <div class="manual-panel">
+          <div>
+            <strong>手动驾驶</strong>
+            <p class="help">
+              WASD / 方向键，或拖动摇杆。松开请求停车。<br />手动接管后按 G
+              恢复自动；失焦或断线会暂停。
+            </p>
+            <select id="policy" aria-label="手动辅助策略">
+              <option value="teleop_stop">严格停障</option>
+              <option value="teleop_avoid">辅助绕障</option>
+            </select>
+            <p id="gamepad-status" class="help">手柄：未连接</p>
+          </div>
+          <div id="joystick" aria-label="虚拟摇杆">
+            <div class="stick-axis"></div>
+            <div id="stick-knob"></div>
+            <span>拖动驾驶</span>
+          </div>
+        </div>
+      </section>
+      <aside class="inspector panel">
+        <div class="section-label">场景与参数</div>
+        <label>场景名称<input id="scene-name" maxlength="80" /></label>
+        <label
+          >说明<textarea
+            id="scene-description"
+            rows="2"
+            placeholder="例如：窄通道与倒车恢复测试"
+          ></textarea>
+        </label>
+        <div class="paired">
+          <label
+            >全局规划<select id="planner">
+              <option value="rrt_connect">RRT-Connect</option>
+              <option value="voronoi">Voronoi + D* Lite</option>
+            </select></label
+          ><label
+            >运动模型<select id="model">
+              <option value="differential">差速</option>
+              <option value="ackermann">阿克曼</option>
+            </select></label
+          >
+        </div>
+        <div class="paired">
+          <label
+            >车长 · m<input
+              id="body-length"
+              type="number"
+              min="0.05"
+              step="0.1" /></label
+          ><label
+            >车宽 · m<input id="body-width" type="number" min="0.05" step="0.1"
+          /></label>
+        </div>
+        <details open>
+          <summary>初始位姿与目标</summary>
+          <div class="pose-row">
+            <span>初始</span
+            ><label>X<input id="start-x" type="number" step="0.1" /></label
+            ><label>Y<input id="start-y" type="number" step="0.1" /></label
+            ><label
+              >朝向 °<input id="start-yaw" type="number" step="5"
+            /></label>
+          </div>
+          <div class="pose-row">
+            <span>目标</span
+            ><label>X<input id="goal-x" type="number" step="0.1" /></label
+            ><label>Y<input id="goal-y" type="number" step="0.1" /></label
+            ><label>朝向 °<input id="goal-yaw" type="number" step="5" /></label>
+          </div>
+          <button id="current-as-start">将当前车位设为初始位姿</button>
+        </details>
+        <details>
+          <summary>地图边界 · m</summary>
+          <div class="paired">
+            <label>X 最小<input id="xmin" type="number" step="1" /></label
+            ><label>X 最大<input id="xmax" type="number" step="1" /></label>
+          </div>
+          <div class="paired">
+            <label>Y 最小<input id="ymin" type="number" step="1" /></label
+            ><label>Y 最大<input id="ymax" type="number" step="1" /></label>
+          </div>
+        </details>
+        <details>
+          <summary>导航与物理参数</summary>
+          <div class="paired">
+            <label
+              >全局额外间距 · m<input
+                id="planner-clearance"
+                type="number"
+                min="0"
+                step="0.01"
+            /></label>
+            <label
+              >目标入射距离 · m<input
+                id="goal-approach"
+                type="number"
+                min="0"
+                step="0.1"
+                placeholder="自动"
+            /></label>
+          </div>
+          <label
+            >间距策略<select id="adaptive-clearance">
+              <option value="adaptive">自动适应通道</option>
+              <option value="fixed">固定额外间距</option>
+            </select></label
+          >
+          <p class="help">
+            自动模式将额外间距作为偏好，通道狭窄时缩减；车体碰撞安全边距始终保留。入射距离留空会自动适应终点空间。
+          </p>
+          <div class="paired">
+            <label
+              >控制周期 · s<input
+                id="dt"
+                type="number"
+                min="0.02"
+                step="0.01" /></label
+            ><label
+              >手动限速 · m/s<input
+                id="manual-speed"
+                type="number"
+                min="0.01"
+                step="0.1"
+            /></label>
+          </div>
+          <div class="paired">
+            <label
+              >预测时长 · s<input
+                id="horizon"
+                type="number"
+                min="0.1"
+                step="0.1" /></label
+            ><label
+              >规划预算 · s<input
+                id="budget"
+                type="number"
+                min="0.01"
+                step="0.1"
+            /></label>
+          </div>
+          <div class="paired">
+            <label
+              >质量 · kg<input
+                id="mass"
+                type="number"
+                min="0.1"
+                step="1" /></label
+            ><label
+              >驱动力 · N<input id="force" type="number" min="0.1" step="5"
+            /></label>
+          </div>
+        </details>
+        <details>
+          <summary>完整参数 JSON</summary>
+          <p class="help">
+            包含 DWA、摩擦、回中、手柄映射等全部参数。修改后先更新草稿。
+          </p>
+          <textarea
+            id="advanced"
+            rows="13"
+            spellcheck="false"
+            aria-label="完整参数 JSON"
+          ></textarea
+          ><button id="advanced-update">更新参数草稿</button>
+        </details>
+        <div class="section-label">运行诊断</div>
+        <div id="diagnostics" class="diagnostics">尚未开始</div>
+      </aside>
+    </main>
+    <dialog id="library">
+      <div class="dialog-heading">
+        <h2>场景库</h2>
+        <button id="library-close">关闭</button>
+      </div>
+      <p class="help">
+        保存在运行服务的设备上，局域网中的其他设备也能加载。每次保存创建一个新用例。
+      </p>
+      <div id="scene-list"></div>
+    </dialog>
+  </body>
+</html>

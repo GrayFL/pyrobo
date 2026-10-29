@@ -22,11 +22,14 @@ class RRTConnectConfig:
     path_spacing: float = 0.15
     clearance: float = 0.12
     seed: int = 7
+    bridge_sampling: bool = True
 
     def __post_init__(self):
         for name in ("step_size", "time_budget", "path_spacing"):
             positive(getattr(self, name), name)
         positive(self.clearance, "clearance", zero=True)
+        if not isinstance(self.bridge_sampling, bool):
+            raise ValueError('bridge_sampling must be boolean')
         if not np.isfinite(self.goal_bias) or not 0 <= self.goal_bias <= 1:
             raise ValueError("goal_bias must be in [0, 1]")
         for name, lower in (("max_extensions", 1), ("shortcut_attempts", 0)):
@@ -79,23 +82,25 @@ class RRTConnect:
         frame = obstacles.cloud.frame
         if start.wrd_frame != frame or goal.wrd_frame != frame:
             raise ValueError("start, goal and obstacle frames must agree and be explicit")
-        cfg = self.config
+        cfg, footprint = self.config, self.safety_footprint
         extensions = 0
+        bridge_samples = 0
 
         def finish(xy, status):
-            return PlanResult(path_poses(xy, frame, start.ego_frame), status, extensions, perf_counter() - started)
+            return PlanResult(path_poses(xy, frame, start.ego_frame), status, extensions, perf_counter() - started,
+                              {'bridge_samples': bridge_samples})
 
         def free(p, q):
-            return (obstacles.rectangle_segment_free(p, q, self.safety_footprint, bounds)
-                    and obstacles.rectangle_segment_free(q, p, self.safety_footprint, bounds))
+            return (obstacles.rectangle_segment_free(p, q, footprint, bounds)
+                    and obstacles.rectangle_segment_free(q, p, footprint, bounds))
 
         def path_free(xy):
-            return obstacles.path_free(xy, self.safety_footprint, bounds,
+            return obstacles.path_free(xy, footprint, bounds,
                                        start_yaw=initial[2], goal_yaw=final[2])
 
-        if obstacles.clearances([initial], self.safety_footprint, bounds)[0] <= 0:
+        if obstacles.clearances([initial], footprint, bounds)[0] <= 0:
             return finish([], "invalid_start")
-        if obstacles.clearances([final], self.safety_footprint, bounds)[0] <= 0:
+        if obstacles.clearances([final], footprint, bounds)[0] <= 0:
             return finish([], "invalid_goal")
         if path_free([a, b]):
             return finish(self._densify(np.array([a, b])), "success")
@@ -120,7 +125,7 @@ class RRTConnect:
             direction = -diff if tree.reverse else diff
             heading = float(np.arctan2(direction[1], direction[0]))
             if not obstacles.rotation_free(nodes[nearest], tree.heading[nearest], heading,
-                                           self.safety_footprint, bounds):
+                                           footprint, bounds):
                 return None, False
             index = tree.size
             tree.nodes[index] = new
@@ -132,8 +137,30 @@ class RRTConnect:
         active = 0
         while available():
             first, second = trees[active], trees[1 - active]
-            target = (second.nodes[0] if self.rng.random() < cfg.goal_bias else
-                      self.rng.uniform([bounds.xmin, bounds.ymin], [bounds.xmax, bounds.ymax]))
+            if self.rng.random() < cfg.goal_bias:
+                target = second.nodes[0]
+            else:
+                target = None
+                if cfg.bridge_sampling and len(obstacles.xy) and self.rng.random() < .35:
+                    # Obstacle-surface bridge sampling: the midpoint of nearby
+                    # wall samples can lie in a narrow passage. It only biases
+                    # targets; every tree edge/rotation still gets exact checks.
+                    span = 2*(max(footprint.length, footprint.width)+2*(footprint.margin+obstacles.point_radius))
+                    for _ in range(3):
+                        p = obstacles.xy[self.rng.integers(len(obstacles.xy))]
+                        q = obstacles.xy[obstacles.tree.query(p+self.rng.normal(size=2)*span)[1]]
+                        vector = q-p
+                        distance = np.linalg.norm(vector)
+                        if distance <= footprint.width+2*(footprint.margin+obstacles.point_radius) or distance > 2*span:
+                            continue
+                        midpoint = (p+q)/2
+                        yaw = np.arctan2(vector[1], vector[0])+np.pi/2
+                        if obstacles.clearances([[*midpoint, yaw]], footprint, bounds)[0] > 0:
+                            target = midpoint
+                            bridge_samples += 1
+                            break
+                if target is None:
+                    target = self.rng.uniform([bounds.xmin, bounds.ymin], [bounds.xmax, bounds.ymax])
             i, _ = extend(first, target)
             if i is not None:
                 while available():

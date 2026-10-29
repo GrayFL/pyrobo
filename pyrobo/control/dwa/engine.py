@@ -17,7 +17,7 @@ from ...safety.fallback import selected_trajectory, verified_stop
 from ...safety.guard import SafetyConfig, SafetyGuard
 from .config import DWAConfig
 from .policies import NavigationPolicy, TeleopPolicy
-from .rollout import MotionBatch, evaluate_safety
+from .rollout import MotionBatch, evaluate_safety, immediate_safety
 from .sampling import sample_window
 from .scoring import navigation_scores, teleop_scores
 
@@ -42,7 +42,7 @@ class DWAEngine:
         self.index = index or SnapshotIndex()
         self.input_guard = SafetyGuard(self.plant, self.command_space, self.footprint,
                                       index=self.index, config=input_limits or SafetyConfig())
-        self.navigation_policy = NavigationPolicy()
+        self.navigation_policy = NavigationPolicy(self.footprint)
         self.teleop_policy = TeleopPolicy()
         self.policies = {MotionPolicy.NAVIGATION: self.navigation_policy,
                          MotionPolicy.TELEOP_STOP: self.teleop_policy, MotionPolicy.TELEOP_AVOID: self.teleop_policy}
@@ -82,7 +82,7 @@ class DWAEngine:
         policy = self.policies[request.policy]
         return policy.prepare(observation, request, self.command_space, self.config, self.plant.codec, self.previous)
 
-    def evaluate_candidates(self, observation, request, search, *, context=None, world=None):
+    def evaluate_candidates(self, observation, request, search, *, context=None, world=None, immediate_check=None):
         """Inspect one numerical batch. No candidate commands or poses become objects."""
         state = self._validate_observation(observation)
         context = context or self._prepare(observation, request)
@@ -90,14 +90,17 @@ class DWAEngine:
         native, command_ok = self.command_space.to_native_batch(search)
         prediction, clearance, masks = evaluate_safety(self.predictor, state, native, observation.dt, world,
                                                        observation.bounds, diagnostics=self.config.collect_batch_diagnostics or
-                                                       self.config.reject_lateral_violation)
+                                                       self.config.reject_lateral_violation, immediate_check=immediate_check)
         final = self.plant.codec.poses(prediction.states[:, prediction.prediction_end])
         policy = self.policies[request.policy]
         score = getattr(policy, 'score_batch', None)
         if score is not None:
             objective, policy_ok = score(context, search, final, self.config, self.command_space)
         elif request.policy == MotionPolicy.NAVIGATION:
-            objective, policy_ok = navigation_scores(context, search, final, self.config, self.command_space, observation)
+            terminal_clearance = (world.clearances(final, self.footprint, observation.bounds)
+                                  if context.mode == 'recovering' else None)
+            objective, policy_ok = navigation_scores(context, search, final, self.config, self.command_space, observation,
+                                                      terminal_clearance=terminal_clearance)
         else:
             objective, policy_ok = teleop_scores(context, search, final, self.config, self.command_space)
         masks['command_valid'] = command_ok
@@ -133,17 +136,37 @@ class DWAEngine:
         counts = (self.config.linear_samples,) + (self.config.angular_samples,)*(self.command_space.search_size-1)
         search = sample_window(window, counts)
         total, feasible_count = len(search), 0
-        best, best_score = None, np.inf
+        best, best_score, best_intent_error = None, np.inf, np.inf
+        lower, upper = self.command_space.bounds()
+        scale = np.maximum(upper-lower, 1e-12)
         batch_size = self.config.batch_size or max(1, total)
         # Each iteration handles an ndarray block, never an individual candidate.
         for offset in range(0, total, batch_size):
-            batch = self.evaluate_candidates(observation, request, search[offset:offset+batch_size], context=context, world=world)
+            block = search[offset:offset+batch_size]
+            native, command_ok = self.command_space.to_native_batch(block)
+            immediate = immediate_safety(self.predictor, state, native, observation.dt, world, observation.bounds)
+            eligible = np.flatnonzero(command_ok & (immediate[0] > 0.) & immediate[1] & immediate[2])
+            if not len(eligible):
+                continue
+            # Rejected rows already fail a mandatory safety condition. Do not
+            # generate long rollouts for them; retain original candidate IDs.
+            batch = self.evaluate_candidates(observation, request, block[eligible], context=context, world=world,
+                                             immediate_check=tuple(values[eligible] for values in immediate))
             feasible_count += int(batch.feasible.sum())
             if batch.feasible.any():
-                index = int(np.argmin(batch.costs))
-                if batch.costs[index] < best_score - 1e-12:
+                minimum = float(np.min(batch.costs))
+                tied = np.flatnonzero(batch.feasible & (batch.costs == minimum))
+                # A stopped car can steer without changing its body trajectory.
+                # Equal trajectory costs must not pick the first (often opposite)
+                # steering sample. Preserve intent, including across batch chunks.
+                errors = np.sum(((batch.search_commands[tied]-context.desired)/scale)**2, axis=1)
+                selected = int(np.argmin(errors))
+                index, intent_error = int(tied[selected]), float(errors[selected])
+                if (batch.costs[index] < best_score or
+                        (batch.costs[index] == best_score and intent_error < best_intent_error)):
                     best_score = float(batch.costs[index])
-                    best = (batch, index, offset + index)
+                    best_intent_error = intent_error
+                    best = (batch, index, offset + int(eligible[index]))
         if best is None:
             result = verified_stop(observation, self.predictor, self.command_space, world, reason='no_feasible_candidate',
                                    extra={'controller_mode': 'blocked', 'window_fallback': window.fallback_reason})

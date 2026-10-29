@@ -31,8 +31,8 @@ def test_stagnation_recovery_is_bounded_and_respects_reverse_permission(allow_re
 
 
 def test_ackermann_recovers_from_measured_narrow_corridor_stopping_pose():
-    from examples.navigation_benchmark.control import trial
-    from examples.navigation_benchmark.scenarios import scenarios
+    from benchmarks.navigation.control import trial
+    from benchmarks.navigation.scenarios import scenarios
     case = replace(scenarios()['narrow_ackermann'],
                    start=pose2d(5.9808207646, 4.427059758, -.352111393))
     result = trial(case, 'rrt_connect', 'ackermann', steps=350)

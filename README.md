@@ -105,42 +105,42 @@ runtime.set_mode(ControlMode.AUTO)
 
 ```bash
 python -m pip install -e '.[interactive]'
-python -m examples.pygame_sim --config examples/configs/pygame.toml
-python -m examples.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
+python -m pyrobo.apps.pygame_sim --config pyrobo/apps/configs/pygame.toml
+python -m pyrobo.apps.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
 ```
 
-G 恢复自动导航，Space 暂停，E 急停，R 解除到暂停，Home 重置；手动输入默认停障辅助，按 2 切换辅助绕障。详见[交互测试台说明](examples/pygame_sim/README.md)及[配置模板](examples/configs/pygame.toml)。pygame 为可选依赖，不进入核心库。
+G 恢复自动导航，Space 暂停，E 急停，R 解除到暂停，Home 重置；手动输入默认停障辅助，按 2 切换辅助绕障。详见[交互测试台说明](pyrobo/apps/pygame_sim/README.md)及[配置模板](pyrobo/apps/configs/pygame.toml)。pygame 为可选依赖，不进入核心库。
 
 ## Web 地图编辑与局域网测试
 
 ```bash
 python -m pip install -e '.[web]'
-python -m examples.web_sim --host 0.0.0.0 --port 8000
+python -m pyrobo.apps.web_sim --host 0.0.0.0 --port 8000
 ```
 
 本机打开 `http://127.0.0.1:8000`，其他设备使用服务器的局域网 IP。支持矩形、多边形、自由画墙与独立折线墙，任意摆放车辆和目标、切换算法 / 车型 / 参数，以及键盘、屏幕摇杆和点击导航。每个窗口独立运行，场景库跨设备共享；完整场景可保存为 JSON，并作为无界面回归用例重放。
 
 ```bash
-python -m examples.web_sim.replay examples/scenes/polygon_corridor.json --steps 700
+python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/polygon_corridor.json --steps 700
 ```
 
-详见 [Web 运动实验室说明](examples/web_sim/README.md)。页面无需 Node 构建或外部 CDN，FastAPI / Uvicorn 不进入核心算法依赖。
+详见 [Web 运动实验室说明](pyrobo/apps/web_sim/README.md)。页面无需 Node 构建或外部 CDN，FastAPI / Uvicorn 不进入核心算法依赖。
 
-交互例程默认将全局额外间距作为首选值自动适配，保留矩形、碰撞 margin 和点半径；页面可切换为固定硬间距。阿克曼终点入射距离留空时根据可用空间自动选择。可用[窄道回归场景](examples/scenes/narrow_ackermann_adaptive.json)测试两个全局规划器，算法语义见[规划组合说明](pyrobo/planning/README.md)。
+交互例程默认将全局额外间距作为首选值自动适配，保留矩形、碰撞 margin 和点半径；页面可切换为固定硬间距。阿克曼终点入射距离留空时根据可用空间自动选择。可用[窄道回归场景](pyrobo/apps/scenes/narrow_ackermann_adaptive.json)测试两个全局规划器，算法语义见[规划组合说明](pyrobo/planning/README.md)。
 
 ## 多进程导航与延迟测试
 
 可选的 `pyrobo.integrations.rsim.NavigationStack` 使用真实 RSim 将全局规划、DWA、执行检查分到独立进程；传递模型原生命令和完整状态，拒绝过期结果，并在执行端单独复核有效期及制动。仿真物理持续前进，可以注入计算卡顿、里程计和地图中断。
 
 ```bash
-python -m examples.navigation_benchmark.rsim_platform --scenario narrow_ackermann \
+python -m benchmarks.navigation.rsim_platform --scenario narrow_ackermann \
   --model ackermann --planner rrt_connect --control-delay-every 8 --control-delay .4 \
   --output reports/narrow-delayed.json
-python -m examples.navigation_benchmark.planning --repeats 20 --budget .5 \
+python -m benchmarks.navigation.planning --repeats 20 --budget .5 \
   --output reports/global.json
 ```
 
-安装和端口契约见 [RSim 集成](pyrobo/integrations/rsim/README.md)，复现实验见 [导航测试平台](examples/navigation_benchmark/README.md)；[实测报告](reports/navigation/README.md)同时保留成功和失败用例。
+安装和端口契约见 [RSim 集成](pyrobo/rsim/README.md)，复现实验见 [导航测试平台](benchmarks/navigation/README.md)；[实测报告](reports/navigation/README.md)同时保留成功和失败用例。
 
 ## 运行例程
 
@@ -166,3 +166,34 @@ python -m pytest -q
 全局算法搜索 XY 折线，验证矩形平移与转角碰撞，但不求解完整 SE(2) / 汽车可达路径；阿克曼末端预留直线入射段，可通过 `NavigationConfig.goal_approach_distance` 单独设置长度，无法容纳时返回 `invalid_goal_approach`。复杂停车、极窄弯道或局部极值仍可能需要更合适的全局规划器或重定位，预算失败不能证明连续空间无路。DWA 所有实际候选均受所选模型约束。
 
 动力学面向平地低速虚拟底盘，不模拟轮胎侧滑、载荷转移或接触力学；摩擦圆限制当前状态的执行器预算，并报告参考包络越界，不能保证瞬态实际横向加速度永远不越界。`safe=True` 表示当前点云和配置模型下通过预测检查。点云需覆盖障碍表面，表面点不编码实体内部；未知空间、SLAM、动态障碍预测和硬件延迟由上层处理。预算为软实时，Qhull、单次几何运算和 Python 调度不能硬抢占。
+
+
+## 可选 RSim 设备与跨提供端导航
+
+公开运行时路径为 `pyrobo.rsim`，包含 `devices`（连接）、`drivers`（工厂）、
+`components`（执行）和 `assemblies`（组合）。需要真实 RSim >=0.4；
+纯算法和内存物理模型不依赖 RSim。`pyrobo.integrations.rsim` 在 0.1 过渡期
+委托同一实现，计划 0.2 退役。
+
+`MemoryChassisFactory.build()` 只构造未运行组件，`shared()` 返回启动配方，
+`device()` 只连接。完整端口只在内存工厂本地定义，公开接口族是
+`chassis-ports-v1`；可用 `rsim.devices.ChassisPortsDevice` 消费本库或
+MujocoSim 提供端。默认不允许运动，仿真运动也须明确 `motion_enabled=True`。
+
+`NavigationInputs` 显式转换定位和测量状态；`NavigationCommandOutput` 保留
+命令身份及主机期限。`StackConfig.clock` 区分源环境时间与主机安全时间。
+同一导航组合支持本地、线程和进程执行，包装层没有引擎选择分支。
+
+```bash
+python -m pyrobo.apps.navigation_provider --key demo --clock simulation \
+  --execution thread --duration 20 --output navigation.json
+```
+
+该消费程序连接已经启动的设备；无需安装 MuJoCo 或 MujocoSim。默认示例
+使用固定预建空房地图、明确的平面定位投影及相同操作限速，不是 SLAM 验收。
+安装边界、字段、停止模式降级、reset 与兼容要求见
+[运行时设备与导航](pyrobo/rsim/README.md)。
+
+完整交互工具现位于 `pyrobo.apps.pygame_sim`、`pyrobo.apps.web_sim`，
+配置、Web 静态资源及小型回归场景随包管理。旧 examples 入口只做兼容委托；
+导航基准工具位于 `benchmarks/navigation`。无须从仓库根目录启动包内应用。

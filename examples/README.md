@@ -47,8 +47,8 @@ handoff CLI 同样通过 `control_input` 提交期望，手动期间不会额外
 
 ```bash
 python -m pip install -e '.[interactive]'
-python -m examples.pygame_sim --config examples/configs/pygame.toml
-python -m examples.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
+python -m pyrobo.apps.pygame_sim --config pyrobo/apps/configs/pygame.toml
+python -m pyrobo.apps.pygame_sim --planner voronoi --model ackermann --set footprint.length=1.0
 ```
 
 提供 WASD / 箭头键、屏幕虚拟摇杆、可配置 USB 手柄，以及点击 / 拖动地图设置导航位置与朝向。主线程绘图，工作线程运行共享 Supervisor → DWA → SafetyGuard → Simulator 链路；失焦、断开手柄和输入超时会暂停。所有模型、动力学、规划器参数可通过 TOML 和 `--set` 调整。
@@ -58,8 +58,8 @@ python -m examples.pygame_sim --planner voronoi --model ackermann --set footprin
 ## Web 地图编辑测试台
 
 ```bash
-python -m examples.web_sim --host 0.0.0.0 --port 8000
-python -m examples.web_sim.replay examples/scenes/polygon_corridor.json --steps 700
+python -m pyrobo.apps.web_sim --host 0.0.0.0 --port 8000
+python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/polygon_corridor.json --steps 700
 ```
 
 使用可选 `web` 依赖，局域网设备通过浏览器绘制地图、放置车辆和目标，并驾驶或自动导航。支持保存 / 加载 / 导入导出完整 JSON 场景及命令行批量回放。每个浏览器独立实验，共享服务端场景库。操作与部署说明见 [web_sim/README.md](web_sim/README.md)。
@@ -71,10 +71,10 @@ Pygame 和 Web 的配置与控制链路由 `sim_common/` 共享，原 `pygame_si
 [导航测试平台](navigation_benchmark/README.md)包含 8 种连续几何地图、两种全局规划器、两种车型的重复规划与闭环实验。RSim 入口把全局、局部和执行分到独立进程，真实物理时间持续前进，可注入 100 / 400 ms 计算延迟及传感器 / 地图中断；不同于同步 Web / Pygame 的固定 dt 实验。
 
 ```bash
-python -m examples.navigation_benchmark.rsim_platform --scenario narrow_ackermann \
+python -m benchmarks.navigation.rsim_platform --scenario narrow_ackermann \
   --model ackermann --planner rrt_connect --output reports/narrow.json
-python -m examples.navigation_benchmark.rsim_platform \
-  --scene examples/scenes/narrow_ackermann_adaptive.json --output reports/saved-scene.json
+python -m benchmarks.navigation.rsim_platform \
+  --scene pyrobo/apps/scenes/narrow_ackermann_adaptive.json --output reports/saved-scene.json
 ```
 
-保存的 Web 场景会带入几何、起终点、车型、矩形和导航参数；读取此格式需要 Web extra 的场景校验依赖。CLI 可覆盖车型、规划器、最高速度、额外间距和入射长度，最终有效配置写入报告。RSim 安装与外部数据源接入见[组件接口](../pyrobo/integrations/rsim/README.md)。
+保存的 Web 场景会带入几何、起终点、车型、矩形和导航参数；读取此格式需要 Web extra 的场景校验依赖。CLI 可覆盖车型、规划器、最高速度、额外间距和入射长度，最终有效配置写入报告。RSim 安装与外部数据源接入见[组件接口](../pyrobo/rsim/README.md)。

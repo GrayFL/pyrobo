@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from examples.pygame_sim.config import load_config, parse_args
-from examples.pygame_sim.session import Action, ControlInput, Session, Worker
+from pyrobo.apps.pygame_sim.config import load_config, parse_args
+from pyrobo.apps.pygame_sim.session import Action, ControlInput, Session, Worker
 from pyrobo import ControlMode, MotionPolicy
 
 
@@ -63,7 +63,7 @@ def test_clicked_goal_runs_real_backend_and_reaches_goal(model, planner):
 
 
 def test_shipped_config_plans_and_drives_long_ackermann_around_walls():
-    template = Path(__file__).resolve().parents[1]/'examples/configs/pygame.toml'
+    template = Path(__file__).resolve().parents[1]/'pyrobo/apps/configs/pygame.toml'
     session = Session(load_config(template, selectors={'backend.model': 'ackermann',
                       'backend.planner': 'voronoi', 'app.start_mode': 'auto'},
                       overrides=['footprint.length=1.0']))

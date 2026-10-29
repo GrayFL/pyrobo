@@ -9,11 +9,11 @@ import pytest
 
 pytest.importorskip('fastapi')
 from fastapi.testclient import TestClient
-from examples.sim_common.session import Action
-from examples.web_sim.replay import replay
-from examples.web_sim.scene import Polyline, Scene, SceneSession, SceneStore
-from examples.web_sim.server import create_app
-from examples.web_sim.world import PolygonWorld
+from pyrobo.apps.sim_common.session import Action
+from pyrobo.apps.web_sim.replay import replay
+from pyrobo.apps.web_sim.scene import Polyline, Scene, SceneSession, SceneStore
+from pyrobo.apps.web_sim.server import create_app
+from pyrobo.apps.web_sim.world import PolygonWorld
 from pyrobo import Footprint, pose2d
 from pyrobo.core import Bounds2D
 from pyrobo.simulation import World2D
@@ -189,7 +189,7 @@ def test_cross_origin_websocket_is_rejected(tmp_path):
 
 
 def test_narrow_ackermann_saved_case_reaches_goal_without_reducing_body_margin():
-    path = Path(__file__).resolve().parents[1]/'examples/scenes/narrow_ackermann_001.json'
+    path = Path(__file__).resolve().parents[1]/'pyrobo/apps/scenes/narrow_ackermann_001.json'
     case = Scene.model_validate_json(path.read_bytes())
     assert case.config['footprint'] == {'length': .5, 'width': .5, 'margin': .08, 'offset_x': 0.}
     assert case.config['navigation']['goal_approach_distance'] == 1.
@@ -199,7 +199,7 @@ def test_narrow_ackermann_saved_case_reaches_goal_without_reducing_body_margin()
 
 @pytest.mark.parametrize('planner', ['rrt_connect', 'voronoi'])
 def test_narrow_ackermann_adapts_original_extra_clearance_and_entry_length(planner):
-    path = Path(__file__).resolve().parents[1]/'examples/scenes/narrow_ackermann_001.json'
+    path = Path(__file__).resolve().parents[1]/'pyrobo/apps/scenes/narrow_ackermann_001.json'
     data = json.loads(path.read_text())
     config = data['config']
     config['backend'].update(planner=planner, adaptive_clearance=True)

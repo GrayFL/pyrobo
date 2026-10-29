@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 pg = pytest.importorskip('pygame')
 
-from examples.pygame_sim.app import App
-from examples.pygame_sim.config import load_config
-from examples.pygame_sim.session import Action
+from pyrobo.apps.pygame_sim.app import App
+from pyrobo.apps.pygame_sim.config import load_config
+from pyrobo.apps.pygame_sim.session import Action
 from pyrobo import ControlMode, MotionPolicy
 
 

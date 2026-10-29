@@ -33,8 +33,8 @@ def test_explicit_clearance_floor_cannot_be_relaxed_even_if_that_prevents_a_rout
 
 @pytest.mark.parametrize('seed', [0, 7, 19])
 def test_bridge_sampling_narrow_route_has_valid_sweeps_and_replays_after_reset(seed):
-    from examples.navigation_benchmark.scenarios import scenarios
-    from examples.navigation_benchmark.planning import solid_path_valid
+    from benchmarks.navigation.scenarios import scenarios
+    from benchmarks.navigation.planning import solid_path_valid
     case = scenarios()['narrow_ackermann']
     body = Footprint.compact()
     planner = RRTConnect(RRTConnectConfig(seed=seed, clearance=.08, time_budget=2.), body)

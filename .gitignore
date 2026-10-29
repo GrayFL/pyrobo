@@ -14,7 +14,9 @@ examples/scenes/*
 
 PROJECT.md
 assets
-benchmarks
+/benchmarks/*
+!/benchmarks/__init__.py
+!/benchmarks/navigation/
 
 .*
 !.gitignore

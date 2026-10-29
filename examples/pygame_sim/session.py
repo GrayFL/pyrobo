@@ -1,2 +1,2 @@
-"""Compatibility exports for the shared example runtime (no SDL dependency)."""
-from examples.sim_common.session import Action, ControlInput, Session, Snapshot, Worker, readonly
+"""Compatibility entry; use pyrobo.apps.pygame_sim.session (removed in 0.2)."""
+from pyrobo.apps.pygame_sim.session import *  # noqa: F401,F403

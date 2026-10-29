@@ -10,8 +10,8 @@ pytest.importorskip('cloudpickle')
 
 from pyrobo import Ackermann, DWAConfig, NavigationConfig, pose2d
 from pyrobo.integrations.rsim import StackConfig
-from examples.navigation_benchmark.scenarios import scenarios
-from examples.navigation_benchmark.rsim_platform import run
+from benchmarks.navigation.scenarios import scenarios
+from benchmarks.navigation.rsim_platform import run
 
 
 @pytest.mark.parametrize('processes', [False, True])

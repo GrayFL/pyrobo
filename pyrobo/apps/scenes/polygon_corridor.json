@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "name": "折线墙 · 差速测试",
+  "description": "凹多边形与折线墙体，起终点沿下侧通道通行。",
+  "config": {
+    "app": {
+      "width": 1280,
+      "height": 820,
+      "fps": 60,
+      "dt": 0.1,
+      "point_spacing": 0.04,
+      "trail_length": 2400,
+      "input_timeout": 0.35,
+      "start_mode": "paused"
+    },
+    "backend": {
+      "planner": "rrt_connect",
+      "model": "differential",
+      "local_optimizer": "dwa"
+    },
+    "map": {
+      "preset": "custom",
+      "bounds": [
+        -5,
+        5,
+        -4,
+        4
+      ],
+      "start": [
+        -3.0,
+        -2.0,
+        0.0
+      ],
+      "boxes": [],
+      "goal": [
+        3.0,
+        -2.0,
+        0.0
+      ]
+    },
+    "footprint": {
+      "length": 0.5,
+      "width": 0.5,
+      "margin": 0.08,
+      "offset_x": 0.0
+    },
+    "differential": {
+      "track": 0.4,
+      "max_speed": 0.9,
+      "max_reverse_speed": 0.5,
+      "max_yaw_rate": 1.5,
+      "max_wheel_speed": 1.4
+    },
+    "ackermann": {
+      "wheelbase": 0.5,
+      "max_steering": 0.6108652381980153,
+      "max_steering_rate": 1.2,
+      "max_speed": 0.9,
+      "max_reverse_speed": 0.5,
+      "max_yaw_rate": 1.5
+    },
+    "dynamics": {
+      "mass": 20.0,
+      "yaw_inertia": 1.2,
+      "steering_inertia": 0.05,
+      "drive_force": 50.0,
+      "brake_force": 70.0,
+      "wheel_force": 35.0,
+      "yaw_torque": 3.0,
+      "steering_torque": 1.0,
+      "longitudinal_drag": {
+        "coulomb": 2.0,
+        "linear": 8.0,
+        "quadratic": 1.0,
+        "epsilon": 0.02
+      },
+      "yaw_drag": {
+        "coulomb": 0.08,
+        "linear": 0.5,
+        "quadratic": 0.1,
+        "epsilon": 0.02
+      },
+      "steering_drag": {
+        "coulomb": 0.02,
+        "linear": 0.3,
+        "quadratic": 0,
+        "epsilon": 0.02
+      },
+      "steering_spring": 0.8,
+      "steering_speed_spring": 0.6,
+      "velocity_time_constant": 0.3,
+      "yaw_time_constant": 0.25,
+      "steering_frequency": 6.0,
+      "steering_damping": 1.0,
+      "drive_acceleration": 0.9,
+      "brake_acceleration": 1.2,
+      "yaw_acceleration": 2.5,
+      "steering_acceleration": 6.0,
+      "linear_jerk": 3.0,
+      "yaw_jerk": 8.0,
+      "steering_jerk": 40.0,
+      "friction": 0.6,
+      "gravity": 9.81,
+      "lateral_acceleration": 1.2,
+      "substep": 0.02,
+      "timeout": 0.3,
+      "stop_epsilon": 0.0001
+    },
+    "dwa": {
+      "max_speed": 0.9,
+      "max_yaw_rate": 1.5,
+      "linear_acceleration": 0.9,
+      "angular_acceleration": 2.5,
+      "prediction_time": 1.8,
+      "integration_dt": 0.08,
+      "linear_samples": 7,
+      "angular_samples": 17,
+      "lookahead": 1.3,
+      "goal_tolerance": 0.18,
+      "yaw_tolerance": 0.1,
+      "position_weight": 3.0,
+      "path_weight": 2.0,
+      "heading_weight": 0.65,
+      "clearance_weight": 0.08,
+      "speed_weight": 0.15,
+      "heading_slow_angle": 1.0471975511965976,
+      "turn_in_place_angle": 1.0471975511965976,
+      "turn_exit_angle": 0.3490658503988659,
+      "turn_gain": 1.0,
+      "min_turn_yaw_rate": 0.3,
+      "yaw_reversal_weight": 0.2,
+      "braking_timeout": 4.0,
+      "allow_reverse": true,
+      "batch_size": 0,
+      "collect_batch_diagnostics": false,
+      "reject_lateral_violation": false
+    },
+    "rrt_connect": {
+      "step_size": 0.65,
+      "max_extensions": 1800,
+      "time_budget": 0.5,
+      "goal_bias": 0.15,
+      "shortcut_attempts": 60,
+      "path_spacing": 0.15,
+      "clearance": 0.12,
+      "seed": 7
+    },
+    "voronoi": {
+      "boundary_step": 0.5,
+      "max_edge_length": 15.0,
+      "connection_neighbors": 32,
+      "path_spacing": 0.15,
+      "clearance": 0.12,
+      "safety_distance": 0.5,
+      "safety_weight": 1.0,
+      "time_budget": 2.0,
+      "max_sites": 20000,
+      "max_edge_checks": 50000,
+      "max_expansions": 10000
+    },
+    "navigation": {
+      "lookahead": 1.3,
+      "goal_tolerance": 0.18,
+      "yaw_tolerance": 0.1
+    },
+    "safety": {
+      "max_state_age": 0.1,
+      "max_cloud_age": 0.3,
+      "max_control_dt": 0.5,
+      "expected_dt": null,
+      "braking_timeout": 4.0
+    },
+    "teleop": {
+      "policy": "teleop_stop",
+      "speed_limit": 0.6,
+      "turn_limit": 0.0,
+      "ttl": 0.3,
+      "max_turn_deviation": 0.8,
+      "max_lateral_deviation": 0.8,
+      "max_heading_deviation": 1.2
+    },
+    "joystick": {
+      "enabled": true,
+      "device_index": 0,
+      "throttle_axis": 1,
+      "turn_axis": 0,
+      "invert_throttle": true,
+      "invert_turn": true,
+      "deadzone": 0.12,
+      "deadman_button": 0
+    }
+  },
+  "polygons": [
+    [
+      [
+        -1.0,
+        0.0
+      ],
+      [
+        1.0,
+        0.0
+      ],
+      [
+        1.0,
+        2.0
+      ],
+      [
+        0.4,
+        2.0
+      ],
+      [
+        0.4,
+        0.6
+      ],
+      [
+        -1.0,
+        0.6
+      ]
+    ]
+  ],
+  "polylines": [
+    {
+      "points": [
+        [
+          -3.0,
+          0.0
+        ],
+        [
+          -3.0,
+          1.0
+        ],
+        [
+          -2.0,
+          1.0
+        ]
+      ],
+      "width": 0.3
+    }
+  ]
+}

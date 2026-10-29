@@ -1,0 +1,97 @@
+# python -m examples.pygame_sim --config examples/configs/pygame.toml
+# CLI selectors override this file; repeated --set overrides take final precedence.
+[backend]
+planner = "rrt_connect"          # rrt_connect | voronoi
+local_optimizer = "dwa"
+model = "differential"           # differential | ackermann
+
+[app]
+width = 1280
+height = 820
+fps = 60
+dt = 0.1
+start_mode = "paused"            # paused | manual | auto
+point_spacing = 0.04
+input_timeout = 0.35             # wall-clock UI heartbeat, seconds
+trail_length = 2400
+
+[map]
+preset = "detour"                # detour | empty | custom
+# Custom maps require bounds and start. All distances are metres, angles radians.
+# bounds = [-5.0, 8.0, -4.0, 4.0] # xmin, xmax, ymin, ymax
+# start = [-3.0, 0.0, 0.0]        # x, y, yaw
+# goal = [5.0, 0.0, 0.0]
+# boxes = [[0.0, 0.8, -1.0, 1.0], [3.0, 3.6, 1.5, 3.0]]
+
+[footprint]
+length = 0.5                    # use 1.0 for the long body
+width = 0.5
+margin = 0.08
+offset_x = 0.0
+
+[differential]
+track = 0.4
+max_speed = 0.9
+max_reverse_speed = 0.5
+max_yaw_rate = 1.5
+
+[ackermann]
+wheelbase = 0.5
+max_steering = 0.6108652382       # 35 degrees, in radians
+max_steering_rate = 1.2
+max_speed = 0.9
+max_reverse_speed = 0.5
+
+[dynamics]
+mass = 20.0
+drive_force = 50.0
+brake_force = 70.0
+substep = 0.02
+
+[dynamics.longitudinal_drag]
+coulomb = 2.0
+linear = 8.0
+quadratic = 1.0
+epsilon = 0.02
+
+[dwa]
+linear_samples = 7
+angular_samples = 17
+# prediction_time / lookahead inherit model-aware defaults if omitted:
+# differential 1.8 s / 1.3 m; ackermann 2.4 s / 1.6 m.
+
+[rrt_connect]
+time_budget = 0.5
+seed = 7
+# clearance inherits the model-aware default if omitted.
+
+[voronoi]
+time_budget = 2.0
+safety_weight = 1.0
+
+[navigation]
+goal_tolerance = 0.18
+yaw_tolerance = 0.10
+
+[safety]
+max_control_dt = 0.5
+braking_timeout = 4.0
+
+[teleop]
+policy = "teleop_stop"           # teleop_stop | teleop_avoid
+speed_limit = 0.6
+turn_limit = 0.0                 # 0 = model limit; otherwise omega (diff) / delta (car)
+ttl = 0.3
+max_turn_deviation = 0.8
+max_lateral_deviation = 0.8
+max_heading_deviation = 1.2
+
+[joystick]
+enabled = true
+device_index = 0
+throttle_axis = 1
+turn_axis = 0
+invert_throttle = true           # typical stick-up axis is -1
+invert_turn = true               # typical stick-left axis is -1
+deadzone = 0.12
+deadman_button = 0               # hold A / button 0; -1 disables the button requirement

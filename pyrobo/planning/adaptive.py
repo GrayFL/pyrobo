@@ -14,6 +14,8 @@ from ..core.geometry import planar_state, positive
 
 class AdaptiveClearancePlanner:
     def __init__(self, factory, config, footprint, *, minimum_clearance=0.):
+        if config.time_budget is None:
+            raise ValueError('adaptive clearance requires a wall time_budget; use a fixed-clearance planner for logical budgets')
         positive(minimum_clearance, 'minimum_clearance', zero=True)
         if minimum_clearance > config.clearance:
             raise ValueError('minimum clearance cannot exceed preferred clearance')

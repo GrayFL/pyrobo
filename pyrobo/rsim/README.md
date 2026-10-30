@@ -40,8 +40,8 @@ world. The full memory port specification lives only in
 Both memory and MujocoSim implement `chassis-ports-v1`. Replacing the provider
 requires no backend branch inside NavigationInputs, NavigationStack or
 NavigationCommandOutput. Select matching robot geometry and motion limits in the
-application. `MemoryChassisDevice` adds the memory provider's full odom/imu views;
-those are connection-only capabilities.
+application. `MemoryChassisDevice` adds the memory provider's odom/imu views and
+management ports; these are connection-only capabilities and never create a world.
 
 The packaged consumer demonstrates the same graph against an existing provider:
 
@@ -122,7 +122,16 @@ Forwarded motion never extends its proposal deadline, and the executor's sent
 history records the actual emitted interval.
 Memory reset stops commands, retires old controller epochs, isolates histories
 without reusing sequence cursors, resets the physical time to zero, and publishes
-a new episode. `source.reset()` is a local management operation, not remote RPC.
+a new episode. The owner provides local async management methods. A separately
+connected `MemoryChassisDevice` exposes `describe()` / `synchronize()`,
+`advance(context, command_id, requested_substeps)`, `reset(spawn=None)`,
+`pause()`, `resume()`, `set_rate(rate)` and `abort(reason)` through the declared
+`inspect_request`, `advance_request`, `reset_request` and `control_request` sinks.
+Activate the needed sinks in the client Runtime. A remote `command_id` is the
+mapping returned by `CommandIdentity.to_dict()`; StepContext may be typed or a
+mapping. Management errors for old source contexts use `stale_context`, so they
+do not retire the management port's controller epoch. Motion controller epoch
+retirement still uses `retired`.
 
 Cross-host monotonic deadlines are not supported by this example.
 Python/asyncio/DDS are soft realtime.
@@ -166,8 +175,8 @@ source, `await source.pause()` immediately retires commands and stops ticks;
 `await source.resume()` preserves pose/time/step and increments episode. An
 effective `await source.set_rate(rate)` changes episode while running; while
 paused it takes effect at the next resume. Reset alone resets physical time and
-step to zero. These are local management operations, serialized and completed
-before cancellation is propagated. Episode identifies a control generation,
+step to zero. Owner transactions are serialized and completed before caller
+cancellation is propagated. Episode identifies a control generation,
 not exclusively a world-time reset.
 
 The default `environment_policy='latest'` works locally and through process or
@@ -188,6 +197,74 @@ history fail explicitly. Tick delivery is not a compute or physics ACK.
 navigation stage and returns a command envelope; command acceptance, transaction
 retry rules and physics advancement must be coordinated separately. Calling this
 method alone does not establish a complete lockstep simulation.
+
+## Controlled navigation
+
+`MemoryChassisFactory(scheduling='controlled', motion_enabled=True)` starts with
+state at time zero and no automatic physics task. Its single owner accepts a
+velocity envelope and returns `CommandAccepted`, then advances only through
+`advance(context, command_id, requested_substeps)`. Each full transaction returns
+`PhysicsAdvanced` containing actual substep count, physical stamp and next
+control context. The control `step_index` increases once per completed batch;
+`physical_substeps` counts the fixed-dt integrations within those batches.
+`max_substeps` bounds a request and `ack_capacity` bounds the idempotence cache.
+An identical cached request returns the original ACK even after command expiry.
+A changed request cannot reuse that context; an evicted or old context cannot
+advance again. Reset invalidates old proposals, commands and cached ACKs.
+
+`LockstepNavigation` is the public single-process coordinator. Its source is an
+explicit management dependency alongside a `ChassisPortsDevice` view:
+
+```python
+from rsim import Runtime
+from rsim.devices import ChassisPortsDevice
+from pyrobo.apps.lockstep_navigation import lockstep_config
+from pyrobo.rsim import LockstepNavigation, MemoryChassisFactory
+
+source = MemoryChassisFactory(scheduling='controlled', motion_enabled=True).build()
+config = lockstep_config(clock='simulation', control_period=.1)
+runner = LockstepNavigation(
+    ChassisPortsDevice.from_component(source), source, maps, missions, config,
+    physics_timestep=.02, requested_substeps=5,
+)
+async with Runtime(runner):
+    record = await runner.step()
+    status = await runner.synchronize()
+    await runner.reset()
+```
+
+The maps and missions above are explicit Signals, as in the ordinary navigation
+assembly. Each step freezes state, map revision and mission epoch, calls the same
+navigation algorithms, and stages exactly the computed command Frame. Acceptance
+must preserve its identity, host deadline and fixed source endpoint. Only a full
+physics ACK advances the coordinator. The executor proves the entire control
+interval (`requested_substeps * physics_timestep == control_period`); it cannot
+reuse a shorter environment execution lease for a larger physics batch.
+
+Both host expiry and the fixed source bound are checked before every physical
+substep, including after command conversion. Pause/abort interrupts before the
+next substep. Caller cancellation waits for the owner's transaction outcome;
+partial failure is ABORTED and queryable with actual native time/count, or an
+explicit unknown-state marker if native state is unreadable. Missing or invalid
+ACKs stop navigation; use `synchronize()` and an explicit `reset()` to recover.
+Runner reset resumes the source because provider reset itself preserves pause.
+
+Lockstep configuration requires `RRTConnectConfig(time_budget=None, seed=<int>)`
+and `adaptive_clearance=False`. `max_extensions` and `shortcut_attempts` bound
+planning work. Source generation changes reset the actual global planner's RNG
+and cache, as well as local navigation state. Ordinary wall-budget planning
+defaults remain unchanged; a large wall timeout is not a logical budget.
+
+`pyrobo.apps.lockstep_navigation.run_lockstep` owns an injected compatible source
+and supplies the same graph for Memory and MuJoCo. Its CLI accepts an explicit
+`--factory module:callable`, optional JSON `--factory-config`, physics timestep
+and substep count; backend selection occurs only at construction. Reports keep
+per-step raw stage timings, acceptance/physics ACKs and trajectories. Control
+window RTF counts completed physical intervals. End-to-end RTF includes Runtime
+open, transactions/resets and close, but excludes Factory construction/import.
+CPU is this process's elapsed CPU time; optional RSS is its lifetime peak, not an
+isolated run peak. These are single-process measurements. Distributed stage
+barriers require a separate coordinator and are not supplied by this class.
 
 The consumer CLI accepts `--scheduling realtime|environment`. Reports include
 the chosen mode, exact source contexts, measured RTF, actual control dt, compute

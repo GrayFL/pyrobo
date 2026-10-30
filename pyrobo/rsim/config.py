@@ -65,6 +65,10 @@ class StackConfig:
             raise ValueError('environment policy must be latest or every')
         if self.environment_policy == 'every' and self.scheduling != 'environment':
             raise ValueError('every tick delivery requires environment scheduling')
+        if self.scheduling == 'lockstep' and (not isinstance(self.planner, RRTConnectConfig)
+                or self.planner.time_budget is not None or type(self.planner.seed) is not int
+                or self.adaptive_clearance):
+            raise ValueError('lockstep requires RRTConnectConfig(time_budget=None, seed=<int>) and adaptive_clearance=False')
         for name in ('tick_capacity', 'environment_history'):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:

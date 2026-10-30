@@ -18,7 +18,7 @@ class MemoryChassisFactory:
     This uses pyrobo's finite-force plant, not the retired RSim ideal kinematics.
     """
     INTERFACE_VERSION: ClassVar[str] = 'chassis-ports-v1'
-    FACTORY_VERSION: ClassVar[str] = 'memory-chassis-v2'
+    FACTORY_VERSION: ClassVar[str] = 'memory-chassis-v3'
     name: str = 'memory-chassis'
     clock: str = 'simulation'
     frame: str = 'world'
@@ -35,6 +35,8 @@ class MemoryChassisFactory:
     history: int = 32
     max_ttl: float = .5
     motion_enabled: bool = False
+    max_substeps: int = 1000
+    ack_capacity: int = 32
 
     def __post_init__(self):
         object.__setattr__(self, 'initial_pose', tuple(self.initial_pose))
@@ -54,8 +56,10 @@ class MemoryChassisFactory:
                 raise ValueError('geometry bounds must be ordered')
         if not all(math.isfinite(v) and v > 0 for v in (self.dt, self.speedup, self.max_ttl)):
             raise ValueError('dt, speedup and max_ttl must be finite and positive')
-        if self.scheduling not in ('realtime', 'accelerated'):
-            raise ValueError('memory scheduling must be realtime or accelerated')
+        if self.scheduling not in ('realtime', 'accelerated', 'controlled'):
+            raise ValueError('memory scheduling must be realtime, accelerated or controlled')
+        if any(type(value) is not int or value < 1 for value in (self.max_substeps, self.ack_capacity)):
+            raise ValueError('max_substeps and ack_capacity must be positive integers')
         if not isinstance(self.motion_enabled, bool):
             raise TypeError('motion_enabled must be a boolean')
         self.port_specs(self.clock, history=self.history, max_ttl=self.max_ttl)
@@ -67,6 +71,8 @@ class MemoryChassisFactory:
                  for name in ('pose', 'state', 'odom', 'imu')}
         ports['velocity'] = PortSpec(direction='sink', clock='host:monotonic',
                                      max_ttl=max_ttl, fallback=VelocityCommand())
+        for name in ('reset_request', 'advance_request', 'inspect_request', 'control_request'):
+            ports[name] = PortSpec(direction='sink', clock='host:monotonic', max_ttl=max_ttl, fallback=None)
         return ports
 
     def fingerprint(self):

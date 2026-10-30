@@ -3,15 +3,17 @@ import asyncio
 import math
 from time import monotonic_ns
 from uuid import uuid4
+from dataclasses import asdict
 
 import numpy as np
 from rsim import Component, CommandSink, CommandRejected, VelocityCommand, TickSource, StepContext
 
 from pyrobo import Bounds2D, Twist2D, pose2d
 from pyrobo.simulation.world import Box, Simulator2D, World2D
+from .memory_control import MemoryControl
 
 
-class MemoryChassis(Component):
+class MemoryChassis(MemoryControl, Component):
     def __init__(self, config, specs):
         super().__init__()
         self.config = config
@@ -28,9 +30,13 @@ class MemoryChassis(Component):
         self.rate = config.speedup
         self._management = None
         self._transactions = set()
+        self._init_control()
         for name, spec in specs.items():
             if spec.direction == 'signal':
                 port = self.signal(name, history=spec.history_capacity, clock=spec.clock)
+            elif name in ('reset_request', 'advance_request', 'inspect_request', 'control_request'):
+                port = CommandSink(self, name, getattr(self, '_'+name), fallback=None,
+                                   safe=lambda _: None, max_ttl=spec.max_ttl, hz=200)
             else:
                 port = CommandSink(self, name, self._apply, safe=self._safe,
                                    fallback=spec.fallback, max_ttl=spec.max_ttl,
@@ -49,11 +55,14 @@ class MemoryChassis(Component):
         self._ticks = None
         self._paused = False
         self.rate = self.config.speedup
+        self._init_control()
         self._create_world()
         await self._publish()
         self._start_physics()
 
     def _start_physics(self, *, after_boundary=False):
+        if self.config.scheduling == 'controlled' or self._paused:
+            return
         self._physics_not_before_ns = (monotonic_ns()+round(self.config.dt/self.rate*1e9)
                                        if after_boundary else 0)
         if self.config.scheduling == 'realtime':
@@ -86,44 +95,79 @@ class MemoryChassis(Component):
             self._ticks = TickSource(clock=self.config.clock)
         return self._ticks.subscribe(hz=hz, policy=policy, capacity=capacity)
 
-    def _create_world(self):
+    def _create_world(self, spawn=None):
         cfg = self.config
         world = World2D(Bounds2D(*cfg.bounds), [Box(*box) for box in cfg.boxes], frame=cfg.frame)
         self.simulation = Simulator2D(world,
-            pose2d(*cfg.initial_pose, frame=cfg.frame, body=cfg.body),
+            pose2d(*(cfg.initial_pose if spawn is None else spawn), frame=cfg.frame, body=cfg.body),
             footprint=cfg.footprint, model=cfg.model, dynamics=cfg.dynamics)
         self.step_index = 0
+        self._physical_substeps = 0
+        self._state_known = True
 
     async def _apply(self, envelope):
+        if self.config.scheduling == 'controlled':
+            generation = (self._instance_id, self.episode)
+            async with self._management:
+                if generation != (self._instance_id, self.episode):
+                    raise CommandRejected('command source generation retired while waiting for owner', reason='retired')
+                return self._apply_unlocked(envelope)
+        return self._apply_unlocked(envelope)
+
+    def _apply_unlocked(self, envelope):
         value = envelope.value
         if not isinstance(value, VelocityCommand):
             raise CommandRejected('memory chassis requires VelocityCommand')
         if not self.config.motion_enabled and value != VelocityCommand():
             raise CommandRejected('motion is disabled; configure motion_enabled=True')
-        if self._paused and value != VelocityCommand():
+        if self._paused and (self.config.scheduling == 'controlled' or value != VelocityCommand()):
             raise CommandRejected('memory physics is paused', reason='retired')
+        if self._phase == 'ABORTED':
+            raise CommandRejected('memory source is aborted; reset before staging commands')
         host_now = monotonic_ns()
         if envelope.deadline_ns <= host_now:
             raise CommandRejected('command expired before physical application', reason='expired')
         if envelope.source_bound is not None:
-            envelope.source_bound.check(StepContext(self._instance_id, self.episode, self.step_index),
-                clock=self.config.clock, stamp_ns=round((self.step_index+1)*self.config.dt*1e9))
+            envelope.source_bound.check(self.context, clock=self.config.clock,
+                                        stamp_ns=self.stamp_ns+self.tick_period_ns)
         self.applied, self.deadline_ns = value, envelope.deadline_ns
         self.source_bound = envelope.source_bound
+        self._envelope = envelope
         self.command_accepted += 1
         if self.config.scheduling == 'accelerated':
             # Reserve only the source-time budget still covered at acceptance.
             # Checking a complete next step also handles a command arriving just
             # before a host tick, without integrating a whole extra physics dt.
-            self.source_deadline_ns = (round(self.step_index*self.config.dt*1e9)
+            self.source_deadline_ns = (self.stamp_ns
                                       + int((envelope.deadline_ns-host_now)*self.rate))
             if self.source_bound is not None:
                 self.source_deadline_ns = min(self.source_deadline_ns, self.source_bound.deadline_ns)
+        else:
+            self.source_deadline_ns = self.source_bound.deadline_ns if self.source_bound is not None else None
+        if self.config.scheduling == 'controlled':
+            self._phase, self._staged_context = 'COMMAND_STAGED', self.context
+        return dict(kind='CommandAccepted', context=asdict(self.context),
+                    command_id={name: getattr(envelope, name) for name in ('controller_id', 'controller_epoch', 'sequence')},
+                    deadline_ns=envelope.deadline_ns, source_deadline_ns=self.source_deadline_ns, port='velocity')
 
     async def _safe(self, _value):
+        if self.config.scheduling == 'controlled' and self._management is not None:
+            async with self._management:
+                self._stop_command()
+        else:
+            self._stop_command()
+
+    def _stop_command(self):
         self.applied, self.deadline_ns = VelocityCommand(), 0
         self.source_deadline_ns = 0
         self.source_bound = None
+        self._envelope = self._staged_context = None
+
+    def _integrate(self, mode, *, before_step=None):
+        command = self.config.model.from_twist(Twist2D(self.applied.linear_x, self.applied.angular_z), mode=mode)
+        if before_step is not None:
+            before_step()
+        self.simulation.step(command, self.config.dt)
 
     async def _step(self):
         if self._paused or monotonic_ns() < self._physics_not_before_ns:
@@ -144,24 +188,39 @@ class MemoryChassis(Component):
             self.command_expirations += int(self.deadline_ns != 0)
             await self._safe(None)
         mode = 'track' if valid else 'estop'
-        command = self.config.model.from_twist(Twist2D(self.applied.linear_x, self.applied.angular_z), mode=mode)
-        self.simulation.step(command, self.config.dt)
+        def recheck():
+            from rsim import CommandIdentity
+            envelope = self._envelope
+            if envelope is None:
+                raise CommandRejected('command retired during conversion', reason='retired')
+            self._check_command(CommandIdentity(envelope.controller_id, envelope.controller_epoch, envelope.sequence),
+                                self.stamp_ns+self.tick_period_ns)
+            if self.config.scheduling == 'accelerated' and self.stamp_ns+self.tick_period_ns > self.source_deadline_ns:
+                raise CommandRejected('command source budget expired during conversion', reason='expired')
+        try:
+            self._integrate(mode, before_step=recheck if valid else None)
+        except CommandRejected:
+            await self._safe(None)
+            self._integrate('estop')
         self.step_index += 1
+        self._physical_substeps += 1
         await self._publish()
 
-    async def _publish(self):
+    async def _publish(self, *, emit_tick=True):
         state = self.simulation.state
-        stamp_ns = round(self.step_index*self.config.dt*1e9)
+        stamp_ns = self.stamp_ns
         metadata = {'episode': self.episode, 'step_index': self.step_index,
                     'session': self._instance_id, 'pose_kind': 'ground_truth',
-                    'host_monotonic_ns': monotonic_ns(), 'source_rate': self.rate}
+                    'host_monotonic_ns': monotonic_ns(), 'source_rate': self.rate,
+                    'physical_substeps': self._physical_substeps, 'phase': self._phase}
         kw = dict(stamp_ns=stamp_ns, clock=self.config.clock, metadata=metadata)
         pose = state.pose.copy()
         packet = {'linear_x': state.velocity.linear, 'angular_z': state.velocity.angular,
                   'acceleration': state.acceleration, 'yaw_acceleration': state.yaw_acceleration,
                   'frame': self.config.frame, 'episode': self.episode, 'step_index': self.step_index,
                   'pose_kind': 'ground_truth', 'collided': self.simulation.collided,
-                  'source_rate': self.rate, 'scheduling': self.config.scheduling}
+                  'source_rate': self.rate, 'scheduling': self.config.scheduling,
+                  'physical_substeps': self._physical_substeps, 'phase': self._phase}
         if self.config.scheduling == 'accelerated':
             packet.update(command_accepted=self.command_accepted, command_expirations=self.command_expirations,
                           applied_command=[self.applied.linear_x, self.applied.angular_z],
@@ -183,7 +242,7 @@ class MemoryChassis(Component):
         await self.state.publish(packet, **kw)
         await self.odom.publish(odom, **kw)
         await self.imu.publish(imu, **kw)
-        if self._ticks is not None:
+        if self._ticks is not None and emit_tick:
             await self._ticks.publish(stamp_ns=stamp_ns, episode=self.episode,
                                       step_index=self.step_index, session=self._instance_id)
 
@@ -213,39 +272,66 @@ class MemoryChassis(Component):
             self._transactions.discard(task)
 
     async def _retire_commands(self):
-        await self._safe(None)
+        self._stop_command()
         self.velocity.guard.retire()
+        self.velocity._armed = False
         self.velocity._epoch, self.velocity._sequence = uuid4().hex, 0
 
     async def _new_episode(self):
         self.episode += 1
-        for signal in self.outputs.values():
-            await signal.clear_history()
-        await self._publish()
+        self._phase, self._abort_reason, self._last_result = 'READY', None, None
+        self._step_results.clear()
+        self._suspend_requested = self._paused
+        try:
+            for signal in self.outputs.values():
+                await signal.clear_history()
+            await self._publish()
+        except BaseException as error:
+            self._request_stop()
+            self._phase, self._abort_reason = 'ABORTED', f'boundary publication failed: {error}'
+            for signal in self.outputs.values():
+                await signal.clear_history()
+            raise
 
-    async def pause(self):
+    async def pause(self, *, _deadline_ns=None):
+        self._check_deadline(_deadline_ns)
+        self._request_stop()
+        await self._cancel_events()
         async def operation():
+            self._check_deadline(_deadline_ns)
             self._paused = True
             await self._retire_commands()
             await self._stop_physics()
-        await self._transaction(operation)
+            if self._phase != 'ABORTED':
+                self._phase = 'READY'
+            return self._describe()
+        return await self._transaction(operation)
 
-    async def resume(self):
+    async def resume(self, *, _deadline_ns=None):
+        await self._cancel_events()
         async def operation():
+            self._check_deadline(_deadline_ns)
+            if self._phase == 'ABORTED':
+                raise CommandRejected('aborted source requires explicit reset')
             if not self._paused:
-                return
+                return self._describe()
             await self._retire_commands()
             self._paused = False
             await self._new_episode()
             self._start_physics(after_boundary=True)
-        await self._transaction(operation)
+            return self._describe()
+        return await self._transaction(operation)
 
-    async def set_rate(self, rate):
+    def _validate_rate(self, rate):
         if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
             raise ValueError('source rate must be finite and positive')
         if self.config.scheduling != 'accelerated':
             raise ValueError('dynamic source rate requires scheduling="accelerated"')
+
+    async def set_rate(self, rate, *, _deadline_ns=None):
+        self._validate_rate(rate)
         async def operation():
+            self._check_deadline(_deadline_ns)
             if rate == self.rate:
                 return
             await self._stop_physics()
@@ -254,24 +340,43 @@ class MemoryChassis(Component):
             if not self._paused:
                 await self._new_episode()
                 self._start_physics(after_boundary=True)
-        await self._transaction(operation)
+            return self._describe()
+        return await self._transaction(operation)
 
-    async def reset(self):
-        """Local management operation, serialized on this component's loop.
+    @staticmethod
+    def _validate_spawn(spawn):
+        if spawn is not None and (len(spawn) != 3 or not all(math.isfinite(v) for v in spawn)):
+            raise CommandRejected('spawn must be finite x/y/yaw')
 
-        No command from the previous episode is carried into the new world.
-        This is intentionally not advertised as a remote request/reply API.
-        """
+    async def reset(self, spawn=None, *, _deadline_ns=None):
+        """Reset the native world, retire pending commands and clear cached ACKs."""
+        self._validate_spawn(spawn)
+        await self._cancel_events()
         async def operation():
+            self._check_deadline(_deadline_ns)
             await self._stop_physics()
             await self._retire_commands()
-            self._create_world()
-            await self._new_episode()
+            previous_episode = self.episode
+            try:
+                self._create_world(spawn)
+                await self._new_episode()
+            except BaseException:
+                self.episode = previous_episode+1
+                self.step_index = 0
+                self._physical_substeps, self._state_known = None, False
+                self._paused, self._phase, self._abort_reason = True, 'ABORTED', 'reset or initial snapshot failed'
+                self._step_results.clear()
+                self._last_result = None
+                for port in self.outputs.values():
+                    await port.clear_history()
+                raise
             if not self._paused:
                 self._start_physics(after_boundary=True)
-        await self._transaction(operation)
+            return dict(episode=self.episode, step_index=self.step_index)
+        return await self._transaction(operation)
 
     async def close(self):
+        await self._cancel_events()
         if self._transactions:
             await asyncio.gather(*tuple(self._transactions), return_exceptions=True)
         await self._stop_physics()

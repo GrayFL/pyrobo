@@ -29,7 +29,7 @@ print(result.status, result.path.position)
 | --- | --- | --- |
 | `step_size` | 0.65 m | 每次扩展最大长度 |
 | `max_extensions` | 1800 | 包括失败尝试和 connect 内循环的扩展上限 |
-| `time_budget` | 0.045 s | 每次扩展/快捷连接前检查的协作式预算 |
+| `time_budget` | 0.045 s | 每次扩展/快捷连接前检查的协作式预算；`None` 只使用次数预算 |
 | `goal_bias` | 0.15 | 朝另一棵树根节点采样的概率 |
 | `shortcut_attempts` | 60 | 快捷连接次数上限，与搜索共享时间预算 |
 | `path_spacing` | 0.15 m | 输出相邻路径点的最大距离 |
@@ -38,6 +38,12 @@ print(result.status, result.path.position)
 | `bridge_sampling` | True | 点云表面桥接偏置，保留均匀采样 |
 
 树最近邻使用 NumPy 精确扫描，适合预算内的小树；障碍点查询使用 SciPy KD-tree。每次调用新建树，失败重试会继续随机数序列；`reset()` 恢复种子。相同种子且不触发时间截止时可复现，真实计时截止可能导致不同路径。
+
+确定性运行显式配置 `time_budget=None`、整数 `seed`、`max_extensions` 和
+`shortcut_attempts`。此模式的搜索和快捷连接只按逻辑次数停止；真实 wall 耗时仍记录为
+诊断，不参与路径选择。重复实验应以相同输入调用 `reset()`，恢复随机数状态。
+默认 `time_budget=.045` 的行为不变。`AdaptiveClearancePlanner` 目前要求 wall 时间预算，
+传入 `time_budget=None` 会明确拒绝；锁步装配使用 `adaptive_clearance=False` 的固定余量规划。
 
 `status` 为 `success`、`invalid_start`、`invalid_goal` 或 `budget_exhausted`。失败返回空 `PoseArray`；预算耗尽不等于问题不可解。路径点的 yaw 仅是相邻线段切线方向，最终目标朝向由 DWA 单独控制。该规划器搜索 XY，验证了矩形的直线与旋转包络，但不是完整 SE(2) 或动力学规划器。旋转包络通过不代表阿克曼可以原地旋转；Navigator 预留终点入射段，DWA 再验证汽车实际候选。汽车通常需要更大的跟踪余量，例程按最小转弯半径配置。
 

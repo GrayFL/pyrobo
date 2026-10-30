@@ -69,6 +69,7 @@ class GlobalPlanning(Component):
         self.reader = ObservationReader(self.config.control()[0], clock=self.config.clock)
         self.index = SnapshotIndex()
         self.previous = 0
+        self.source_generation = None
         self.pacer = None
         if self.config.scheduling == 'realtime':
             self.task('global_plan', self.plan, hz=100)
@@ -88,6 +89,15 @@ class GlobalPlanning(Component):
             raise ValueError('planning request does not match the requested source context')
         self.previous = frame.sequence
         job = frame.data
+        generation = (job.get('session', source_session(frame)), job.get('episode', episode(frame)))
+        if generation != self.source_generation:
+            reset = getattr(self.planner, 'reset', None)
+            if callable(reset):
+                reset()
+            elif self.config.scheduling == 'lockstep':
+                raise TypeError('lockstep planner must reset its RNG and cache')
+            self.index = SnapshotIndex()
+            self.source_generation = generation
         map_frame = await self.maps.get()
         cloud, bounds = self.reader.map(map_frame)
         map_version = (self.reader.revision, source_session(map_frame), episode(map_frame))
@@ -266,7 +276,7 @@ class Execution(Component):
         frame = self.pacer.last_frame if self.pacer is not None else None
         return await self.step_once(snapshot=snapshot_from(self.states, self.maps, self.missions, state=frame))
 
-    async def step_once(self, context=None, snapshot=None):
+    async def step_once(self, context=None, snapshot=None, *, actuator_horizon=None):
         snapshot = snapshot or snapshot_from(self.states, self.maps, self.missions)
         if snapshot is None:
             return  # Downstream CommandSink expires independently without output.
@@ -292,9 +302,13 @@ class Execution(Component):
             self.active_host_deadline_ns = 0
             self.epoch, self.sequence = uuid4().hex, 0
         self.environment_episode = environment_version
-        actuator_horizon = max(2*self.config.execution_period, self.config.control_period)
+        if actuator_horizon is None:
+            actuator_horizon = max(2*self.config.execution_period, self.config.control_period)
+        elif self.config.scheduling != 'lockstep' or not 0 < actuator_horizon <= self.config.command_horizon:
+            raise ValueError('explicit actuator interval requires lockstep and must fit command_horizon')
         rate = max(1., source_rate(state_frame)) if source_driven else 1.
-        minimum_hold = 2*self.config.execution_period if source_driven else actuator_horizon
+        minimum_hold = (2*self.config.execution_period if self.config.scheduling == 'environment'
+                        else actuator_horizon)
         minimum_host_hold = minimum_hold/rate
         observation = self.reader.observation(state_frame, map_frame, actuator_horizon, now=now)
         mission = mission_frame.data

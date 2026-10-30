@@ -182,7 +182,7 @@ MujocoSim 提供端。默认不允许运动，仿真运动也须明确 `motion_e
 
 `NavigationInputs` 显式转换定位和测量状态；`NavigationCommandOutput` 保留
 命令身份、主机期限及可选的固定源时间终点。`StackConfig.clock` 区分源环境时间与主机安全时间，
-`StackConfig.scheduling` 独立选择默认 `realtime` 或显式 `environment` 调度。
+`StackConfig.scheduling` 独立选择默认 `realtime`、显式 `environment` 或 `lockstep` 调度。
 同一导航组合支持本地、线程和进程执行，包装层没有引擎选择分支。
 
 ```bash
@@ -200,6 +200,21 @@ python -m pyrobo.apps.navigation_provider --key demo --clock simulation \
 进入新 episode 并保留物理时间，只有 `reset()` 将时间归零。环境导航默认读取最新源帧，
 重复帧不计算，实际消费间隔作为控制 dt；计算过载会跳帧或安全停止。倍率是配置目标，
 报告中的实测 RTF 才是实际吞吐，不能将配置 10 倍等同于实现 10 倍闭环。
+
+`LockstepNavigation` 将同一 `NavigationStack` 接到受控提供端：冻结状态、地图和任务，
+计算并接纳带原期限的命令，再等待实际 `PhysicsAdvanced` 确认完整固定子步。
+`MemoryChassisFactory(scheduling='controlled')` 不自行推进；同一装配也可接
+MuJoCo 的 controlled 提供端。单进程公开例程可直接运行：
+
+```bash
+python -m pyrobo.apps.lockstep_navigation --episodes 2 --output lockstep.json
+```
+
+锁步配置显式使用固定 seed、`RRTConnectConfig(time_budget=None)` 的扩展次数预算，
+并关闭 adaptive clearance；普通规划的默认时间预算不变。reset 会复位实际规划器随机数
+和缓存。提供端接纳或推进确认丢失后停止，先查询实际状态或显式 reset，不能直接猜测下一步。
+例程记录实际完成子步和逐阶段原始计时；完整 RTF 包含 Runtime 启动、运行和关闭，
+不含 Factory 构造和导入。接口与安全边界见[锁步说明](pyrobo/rsim/README.md#controlled-navigation)。
 
 完整交互工具现位于 `pyrobo.apps.pygame_sim`、`pyrobo.apps.web_sim`，
 配置、Web 静态资源及小型回归场景随包管理。旧 examples 入口只做兼容委托；

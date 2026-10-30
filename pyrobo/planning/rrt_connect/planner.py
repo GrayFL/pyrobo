@@ -16,7 +16,7 @@ from pyrobo.core.geometry import path_poses, planar_state, positive
 class RRTConnectConfig:
     step_size: float = 0.65
     max_extensions: int = 1800
-    time_budget: float = 0.045
+    time_budget: float | None = 0.045
     goal_bias: float = 0.15
     shortcut_attempts: int = 60
     path_spacing: float = 0.15
@@ -25,8 +25,10 @@ class RRTConnectConfig:
     bridge_sampling: bool = True
 
     def __post_init__(self):
-        for name in ("step_size", "time_budget", "path_spacing"):
+        for name in ("step_size", "path_spacing"):
             positive(getattr(self, name), name)
+        if self.time_budget is not None:
+            positive(self.time_budget, 'time_budget')
         positive(self.clearance, "clearance", zero=True)
         if not isinstance(self.bridge_sampling, bool):
             raise ValueError('bridge_sampling must be boolean')
@@ -105,10 +107,10 @@ class RRTConnect:
         if path_free([a, b]):
             return finish(self._densify(np.array([a, b])), "success")
         trees = [_Tree(a, cfg.max_extensions, initial[2]), _Tree(b, cfg.max_extensions, final[2], True)]
-        deadline = started + cfg.time_budget
+        deadline = None if cfg.time_budget is None else started + cfg.time_budget
 
         def available():
-            return extensions < cfg.max_extensions and perf_counter() < deadline
+            return extensions < cfg.max_extensions and (deadline is None or perf_counter() < deadline)
 
         def extend(tree, target):
             nonlocal extensions
@@ -175,7 +177,7 @@ class RRTConnect:
                         if not path_free(xy):
                             break
                         for _ in range(cfg.shortcut_attempts):
-                            if len(xy) <= 2 or perf_counter() >= deadline:
+                            if len(xy) <= 2 or (deadline is not None and perf_counter() >= deadline):
                                 break
                             lo, hi = np.sort(self.rng.choice(len(xy), 2, replace=False))
                             candidate = np.concatenate((xy[:lo + 1], xy[hi:]))

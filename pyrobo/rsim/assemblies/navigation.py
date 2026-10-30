@@ -19,7 +19,7 @@ class NavigationStack:
         self.commands = self.execution.commands
         self.diagnostics = self.local.diagnostics
 
-    async def step_once(self, context, snapshot=None):
+    async def step_once(self, context, snapshot=None, *, actuator_horizon=None):
         """Compute one explicit navigation stage without autonomous tasks.
 
         The first frame can request a route and produce a safe stop. That route
@@ -35,7 +35,7 @@ class NavigationStack:
         snapshot.require_context(context)
         await self.local.step_once(context, snapshot)
         await self.global_planning.step_once()
-        return await self.execution.step_once(context, snapshot)
+        return await self.execution.step_once(context, snapshot, actuator_horizon=actuator_horizon)
 
     def placement(self, prefix='navigation'):
         """Three distinct workers; the caller may also supply another placement."""

@@ -94,7 +94,8 @@ remain explicit Supervisor/arbiter responsibilities.
 
 The common velocity capability currently supports differential drive. Native
 wheel commands convert to linear m/s and yaw rad/s, preserving controller ID,
-controller epoch, sequence and the exact host deadline. `coast` is rejected.
+controller epoch, sequence, the exact host deadline and any `SourceCommandBound`.
+`coast` is rejected.
 `soft_stop` and `estop` explicitly degrade to a zero-velocity request; this does
 not claim equivalent physical braking force. Ackermann commands cannot silently
 enter this adapter.
@@ -123,10 +124,81 @@ Memory reset stops commands, retires old controller epochs, isolates histories
 without reusing sequence cursors, resets the physical time to zero, and publishes
 a new episode. `source.reset()` is a local management operation, not remote RPC.
 
-Default hz scheduling is unchanged. `speedup` changes memory source progression;
-source-driven/lockstep navigation requires a separately configured scheduler and
-is not proved by the realtime example. Cross-host monotonic deadlines are not
-supported by this example. Python/asyncio/DDS are soft realtime.
+Cross-host monotonic deadlines are not supported by this example.
+Python/asyncio/DDS are soft realtime.
+
+## Explicit source scheduling
+
+Clock domains and scheduling are separate. `StackConfig(scheduling='realtime')`
+retains the existing host-frequency tasks. `scheduling='environment'` uses source
+publications: input conversion consumes a complete pose/state pair, local
+navigation uses `1/control_period` source Hz, execution uses `1/execution_period`
+source Hz, and command/planning events are forwarded on publication. The same
+`step_once` methods contain the algorithm work in both modes; no second DWA or
+planner implementation is introduced.
+
+`SourceProgress` records the exact consumed source interval, duplicates, initial
+samples and skipped physical steps. Local control uses this actual interval,
+including noninteger frequency ratios. The first sample in a new session/episode
+uses the configured control period explicitly. Skipped physical steps include
+intentional decimation, so they are not all overload drops. Published source
+stamps remain integer nanoseconds throughout conversion and execution.
+
+`RobotObservation.dt` at the independent executor remains the upcoming actuator
+interval. It is not replaced by a measurement interval. In environment mode,
+`source_rate` metadata conservatively shortens the host lease; the fixed
+`SourceCommandBound` separately limits the checked physical endpoint. The final
+provider validates the original session/episode/clock and the complete next
+physics step before integration. Delivery delay, replay and controller reuse
+cannot move that endpoint. Host TTL still expires while source time is stopped.
+
+```python
+source = MemoryChassisFactory(
+    clock='world:demo', scheduling='accelerated', speedup=2.,
+    motion_enabled=True,
+).build()
+config = StackConfig(clock='world:demo', scheduling='environment')
+```
+
+Memory `accelerated` mode uses a fixed physics dt and adjustable host cadence.
+The default `realtime` source retains its old cadence. While a Runtime owns the
+source, `await source.pause()` immediately retires commands and stops ticks;
+`await source.resume()` preserves pose/time/step and increments episode. An
+effective `await source.set_rate(rate)` changes episode while running; while
+paused it takes effect at the next resume. Reset alone resets physical time and
+step to zero. These are local management operations, serialized and completed
+before cancellation is propagated. Episode identifies a control generation,
+not exclusively a world-time reset.
+
+The default `environment_policy='latest'` works locally and through process or
+shared-port transport. Each task coalesces pending input and reports the actual
+consumed dt. `environment_policy='every'` requires explicit `tick_source=source`
+in both `NavigationInputs` and `NavigationStack`, and one local Runtime. Each
+consumer binds an independent bounded TickSubscription in `open()`;
+FrameTickPacer matches its tick to the exact completed upstream frame. A
+`tick_capacity` queue backpressures the source; Signal history is not a queue or
+backpressure mechanism. The source declares `tick_period_ns`, and history must
+cover `(tick_capacity + 1) * ceil(consumer_period / source_period) + 1` source
+samples. `environment_history` configures the converted-state history (default
+128 in every mode). Cross-placement/shared-port every delivery and insufficient
+history fail explicitly. Tick delivery is not a compute or physics ACK.
+
+`scheduling='lockstep'` disables autonomous navigation/IO tasks and exposes
+`NavigationStack.step_once(context, NavigationSnapshot(...))`. It computes one
+navigation stage and returns a command envelope; command acceptance, transaction
+retry rules and physics advancement must be coordinated separately. Calling this
+method alone does not establish a complete lockstep simulation.
+
+The consumer CLI accepts `--scheduling realtime|environment`. Reports include
+the chosen mode, exact source contexts, measured RTF, actual control dt, compute
+counts and command drops. `rtf` divides the first-to-last observed sample's source
+delta by `observed_wall_s`; `elapsed_host_s` also includes Runtime startup/close.
+`source_delta_per_total_host_s` divides that same source delta by the total time.
+These denominators are distinct; a steady observation rate is not total job
+throughput. Configured speedup is not a throughput guarantee.
+The same safety rules may stop an overloaded graph; default DWA settings and
+dynamics remain unchanged. Timing and workload parameters must be reported with
+performance results, including unsuccessful configurations.
 
 ## Compatibility
 

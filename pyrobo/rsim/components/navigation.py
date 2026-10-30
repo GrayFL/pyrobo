@@ -1,7 +1,8 @@
 """RSim dataflow: global search, local optimization, independent execution.
 
-All queues are Signals with bounded history. Workers read the latest sample,
-never replay a FIFO backlog of control jobs after a stall.
+Data ports are Signals with bounded history. Realtime/latest workers coalesce
+old samples; optional local every scheduling uses an independent bounded source
+queue and validates the exact delivered frame and its original deadlines.
 """
 from dataclasses import replace
 import asyncio
@@ -10,7 +11,7 @@ from time import monotonic, monotonic_ns, perf_counter, sleep
 from uuid import uuid4
 
 import numpy as np
-from rsim import Component, CommandEnvelope
+from rsim import Component, CommandEnvelope, SignalPacer, SourceCommandBound
 
 from pyrobo import Navigator, Supervisor, pose2d
 from pyrobo.core import SafetyAssessment
@@ -20,6 +21,7 @@ from pyrobo.geometry.cache import SnapshotIndex
 from pyrobo.runtime.leases import CommandProposal, LeaseExecutor
 from ..packets import (CLOCK, ObservationReader, latest, proposal_packet, decode_proposal,
                        episode, source_host_ns, source_session)
+from ..scheduling import SourceProgress, snapshot_from, source_context, source_rate, source_pacer
 
 
 class RemotePlanner:
@@ -30,6 +32,7 @@ class RemotePlanner:
         self.identity = uuid4().hex
         self.map_revision, self.task_epoch, self.episode = None, None, 0
         self.session = ''
+        self.map_session, self.map_episode = '', 0
         self.reset()
 
     def reset(self):
@@ -48,7 +51,8 @@ class RemotePlanner:
             self.serial += 1
             self.pending = {'id': f'{self.identity}:{self.serial}', 'start': planar_state(start),
                             'goal': planar_state(goal), 'map_revision': self.map_revision,
-                            'task_epoch': self.task_epoch, 'episode': self.episode, 'session': self.session}
+                            'task_epoch': self.task_epoch, 'episode': self.episode, 'session': self.session,
+                            'map_session': self.map_session, 'map_episode': self.map_episode}
         return PlanResult(path_poses([], obstacles.cloud.frame), 'budget_exhausted', 0, 0., {'pending': True})
 
 
@@ -65,15 +69,31 @@ class GlobalPlanning(Component):
         self.reader = ObservationReader(self.config.control()[0], clock=self.config.clock)
         self.index = SnapshotIndex()
         self.previous = 0
-        self.task('global_plan', self.plan, hz=100)
+        self.pacer = None
+        if self.config.scheduling == 'realtime':
+            self.task('global_plan', self.plan, hz=100)
+        elif self.config.scheduling == 'environment':
+            self.pacer = SignalPacer(self.requests)
+            self.task('global_plan', self.plan, pacer=self.pacer)
 
     async def plan(self):
-        frame = await self.requests.get(after=self.previous)
+        frame = self.pacer.last_frame if self.pacer is not None else await self.requests.get(after=self.previous)
+        return await self.step_once(snapshot=frame)
+
+    async def step_once(self, context=None, snapshot=None):
+        frame = latest(self.requests) if snapshot is None else snapshot
+        if frame is None or frame.sequence == self.previous:
+            return None
+        if context is not None and source_context(frame) != context:
+            raise ValueError('planning request does not match the requested source context')
         self.previous = frame.sequence
         job = frame.data
         map_frame = await self.maps.get()
         cloud, bounds = self.reader.map(map_frame)
-        if job['map_revision'] != self.reader.revision:
+        map_version = (self.reader.revision, source_session(map_frame), episode(map_frame))
+        requested_map = (job['map_revision'], job.get('map_session', map_version[1]),
+                         job.get('map_episode', map_version[2]))
+        if requested_map != map_version:
             return  # The controller publishes a new version after observing it.
         started = perf_counter()
         def compute():
@@ -86,16 +106,20 @@ class GlobalPlanning(Component):
                   'extensions': result.extensions, 'elapsed_s': perf_counter()-started,
                   'diagnostics': result.diagnostics, 'pid': os.getpid()}
         current = latest(self.requests)
-        if current is not None and current.data['id'] != job['id']:
+        current_map = latest(self.maps)
+        if (current is not None and current.data['id'] != job['id']) or current_map is None or (
+                current_map.data['revision'], source_session(current_map), episode(current_map)) != map_version:
             return
         await self.routes.publish(packet, stamp_ns=frame.stamp_ns, clock=self.config.clock,
                                   metadata=frame.metadata)
+        return packet
 
 
 class LocalNavigation(Component):
     def __init__(self, states, maps, missions, config, *, optimizer_factory=None,
-                 delay_every=0, delay_s=0., offload=False):
-        super().__init__(inputs=(states, maps, missions))
+                 delay_every=0, delay_s=0., offload=False, tick_source=None):
+        super().__init__(*((tick_source,) if tick_source is not None else ()), inputs=(states, maps, missions))
+        self.tick_source = tick_source
         self.states, self.maps, self.missions, self.config = states, maps, missions, config
         self.optimizer_factory = optimizer_factory
         self.delay_every, self.delay_s = delay_every, delay_s
@@ -122,25 +146,44 @@ class LocalNavigation(Component):
         self.supervisor = Supervisor(self.navigator)
         self.previous = self.sequence = self.route_sequence = 0
         self.version, self.sent_request = None, None
-        self.task('local_control', self.control, hz=1/cfg.control_period)
+        self.progress = SourceProgress(cfg.control_period)
+        self.pacer = None
+        if cfg.scheduling == 'realtime':
+            self.task('local_control', self.control, hz=1/cfg.control_period)
+        elif cfg.scheduling == 'environment':
+            self.pacer = source_pacer(self, self.states, cfg, hz=1/cfg.control_period,
+                                      tick_source=self.tick_source)
+            self.task('local_control', self.control, pacer=self.pacer)
 
     async def control(self):
-        state_frame = latest(self.states)
-        map_frame, mission_frame = latest(self.maps), latest(self.missions)
-        if state_frame is None or map_frame is None or mission_frame is None or state_frame.sequence == self.previous:
+        frame = self.pacer.last_frame if self.pacer is not None else None
+        return await self.step_once(snapshot=snapshot_from(self.states, self.maps, self.missions, state=frame))
+
+    async def step_once(self, context=None, snapshot=None):
+        snapshot = snapshot or snapshot_from(self.states, self.maps, self.missions)
+        if snapshot is None or snapshot.state.sequence == self.previous:
             return
+        snapshot.require_context(context)
+        state_frame, map_frame, mission_frame = snapshot.state, snapshot.map, snapshot.mission
+        observed_dt = self.progress.consume(state_frame)
+        if observed_dt is None:
+            return None
         self.previous = state_frame.sequence
         started = perf_counter()
         mission = mission_frame.data
-        observation = self.reader.observation(state_frame, map_frame, self.config.control_period,
+        control_dt = self.config.control_period if self.config.scheduling == 'realtime' else observed_dt
+        observation = self.reader.observation(state_frame, map_frame, control_dt,
             now=monotonic() if self.config.clock == CLOCK else None)
-        version = (mission['epoch'], self.reader.revision, episode(state_frame), source_session(state_frame))
+        version = snapshot.version
         if version != self.version:
             self.navigator.reset()
+            self.supervisor = Supervisor(self.navigator)
             self.version, self.sent_request = version, None
             if mission.get('goal') is not None:
                 self.supervisor.set_goal(pose2d(*mission['goal'], frame=observation.frame), observation.timestamp)
-        self.bridge.task_epoch, self.bridge.map_revision, self.bridge.episode, self.bridge.session = version
+        self.bridge.task_epoch, self.bridge.map_revision = mission['epoch'], self.reader.revision
+        self.bridge.episode, self.bridge.session = episode(state_frame), source_session(state_frame)
+        self.bridge.map_session, self.bridge.map_episode = source_session(map_frame), episode(map_frame)
         mode = mission.get('mode', 'auto')
         if mode not in ('auto', 'paused'):
             raise ValueError('this navigation transport accepts auto/paused; manual and estop require an authority adapter')
@@ -157,10 +200,8 @@ class LocalNavigation(Component):
                 sleep(self.delay_s)
             return result
         motion = await asyncio.to_thread(compute) if self.offload else compute()
-        current_state, current_mission, current_map = latest(self.states), latest(self.missions), latest(self.maps)
-        if (current_state is None or current_mission is None or current_map is None
-                or (current_mission.data['epoch'], current_map.data['revision'], episode(current_state),
-                    source_session(current_state)) != version):
+        current = snapshot_from(self.states, self.maps, self.missions)
+        if current is None or current.version != version:
             return
         pending = self.bridge.pending
         if pending and pending['id'] != self.sent_request:
@@ -172,6 +213,7 @@ class LocalNavigation(Component):
                                    self.sequence, mission['epoch'], self.reader.revision)
         packet = proposal_packet(proposal, self.config.model)
         packet.update(episode=episode(state_frame), session=source_session(state_frame),
+                      step_index=source_context(state_frame).step_index,
                       source_host_ns=source_host_ns(state_frame),
                       host_deadline_ns=source_host_ns(state_frame)+int(self.config.command_horizon*1e9))
         await self.proposals.publish(packet, stamp_ns=state_frame.stamp_ns, clock=self.config.clock,
@@ -183,15 +225,19 @@ class LocalNavigation(Component):
                   'candidates': motion.diagnostics.candidate_count, 'feasible': motion.diagnostics.feasible_count,
                   'reason': motion.diagnostics.reason, 'safe': motion.safe,
                   'controller_mode': motion.diagnostics.extra.get('controller_mode', 'braking'),
-                  'map_revision': self.reader.revision}
+                  'map_revision': self.reader.revision, 'scheduling': self.config.scheduling,
+                  'control_dt_s': control_dt, **self.progress.diagnostics()}
         await self.diagnostics.publish(packet, stamp_ns=state_frame.stamp_ns, clock=self.config.clock,
                                        metadata=state_frame.metadata)
+        return proposal
 
 
 class Execution(Component):
     """Independent task/map gate with an unrenewed native-command lease."""
-    def __init__(self, proposals, states, maps, missions, config):
-        super().__init__(inputs=(proposals, states, maps, missions))
+    def __init__(self, proposals, states, maps, missions, config, *, tick_source=None):
+        super().__init__(*((tick_source,) if tick_source is not None else ()),
+                         inputs=(proposals, states, maps, missions))
+        self.tick_source = tick_source
         self.proposals, self.states, self.maps, self.missions = proposals, states, maps, missions
         self.config = config
         self.commands = self.signal('commands', history=2, clock=config.clock)
@@ -206,12 +252,34 @@ class Execution(Component):
         self.environment_episode = None
         self.active_host_deadline_ns = 0
         self.epoch = uuid4().hex
-        self.task('execute', self.execute, hz=1/self.config.execution_period)
+        self.progress = SourceProgress(self.config.execution_period)
+        self.observed_sequence = 0
+        self.pacer = None
+        if self.config.scheduling == 'realtime':
+            self.task('execute', self.execute, hz=1/self.config.execution_period)
+        elif self.config.scheduling == 'environment':
+            self.pacer = source_pacer(self, self.states, self.config, hz=1/self.config.execution_period,
+                                      tick_source=self.tick_source)
+            self.task('execute', self.execute, pacer=self.pacer)
 
     async def execute(self):
-        state_frame, map_frame, mission_frame = latest(self.states), latest(self.maps), latest(self.missions)
-        if any(f is None for f in (state_frame, map_frame, mission_frame)):
+        frame = self.pacer.last_frame if self.pacer is not None else None
+        return await self.step_once(snapshot=snapshot_from(self.states, self.maps, self.missions, state=frame))
+
+    async def step_once(self, context=None, snapshot=None):
+        snapshot = snapshot or snapshot_from(self.states, self.maps, self.missions)
+        if snapshot is None:
             return  # Downstream CommandSink expires independently without output.
+        snapshot.require_context(context)
+        state_frame, map_frame, mission_frame = snapshot.state, snapshot.map, snapshot.mission
+        source_driven = self.config.scheduling != 'realtime'
+        if state_frame.sequence != self.observed_sequence:
+            observed_dt = self.progress.consume(state_frame)
+            self.observed_sequence = state_frame.sequence
+            if source_driven and observed_dt is None:
+                return None
+        elif source_driven:
+            return None
         started = perf_counter()
         host_now = monotonic()
         environment_clock = self.config.clock != CLOCK
@@ -225,6 +293,9 @@ class Execution(Component):
             self.epoch, self.sequence = uuid4().hex, 0
         self.environment_episode = environment_version
         actuator_horizon = max(2*self.config.execution_period, self.config.control_period)
+        rate = max(1., source_rate(state_frame)) if source_driven else 1.
+        minimum_hold = 2*self.config.execution_period if source_driven else actuator_horizon
+        minimum_host_hold = minimum_hold/rate
         observation = self.reader.observation(state_frame, map_frame, actuator_horizon, now=now)
         mission = mission_frame.data
         incoming, proposal = latest(self.proposals), None
@@ -241,7 +312,7 @@ class Execution(Component):
                 self.executor.rejected += 1
                 self.executor.last_rejection = 'proposal_stale'
             elif environment_clock and (data.get('host_deadline_ns', int(data['valid_until']*1e9))
-                                        -host_now*1e9 < actuator_horizon*1e9):
+                                        -host_now*1e9 < minimum_host_hold*1e9):
                 self.executor.rejected += 1
                 self.executor.last_rejection = 'proposal_horizon_too_short'
             else:
@@ -254,7 +325,7 @@ class Execution(Component):
         # downstream interval. An independent, freshly checked stop preserves
         # the original proposal deadline without forcing a healthy actuator to
         # alternate between deadman estop and track on every late result.
-        if environment_clock and self.active_host_deadline_ns-host_now*1e9 < actuator_horizon*1e9:
+        if environment_clock and self.active_host_deadline_ns-host_now*1e9 < minimum_host_hold*1e9:
             self.executor.active = None
         # LeaseExecutor extrapolates source measurements through its record of
         # sent commands. Its observation.dt must be the lease actually emitted,
@@ -268,7 +339,7 @@ class Execution(Component):
         if lease_limits:
             remaining = (min(lease_limits)-host_now*1e9)/1e9
             if remaining > 0:
-                observation = replace(observation, dt=min(actuator_horizon, remaining))
+                observation = replace(observation, dt=min(actuator_horizon, remaining*rate))
         host_stale = not 0 <= host_now*1e9-source_host_ns(state_frame) <= self.config.safety.max_state_age*1e9
         map_stale = (not map_frame.data.get('static', False)
                      and not 0 <= host_now*1e9-source_host_ns(map_frame) <= self.config.safety.max_cloud_age*1e9)
@@ -284,20 +355,29 @@ class Execution(Component):
             self.active_host_deadline_ns = proposal_host_deadline_ns
         self.sequence += 1
         packet = {'native': self.config.model.encode_command(result.command), 'mode': result.command.mode,
-                  'issued_at': now, 'task_epoch': mission['epoch'], 'episode': current_episode}
+                  'issued_at': now, 'task_epoch': mission['epoch'], 'episode': current_episode,
+                  'session': environment_version[0], 'step_index': source_context(state_frame).step_index,
+                  'map_revision': self.reader.revision}
         # This short downstream lease is separate from the optimizer lease. It
         # expires at the actuator if the execution process itself stalls/dies.
-        deadline_ns = int((host_now+observation.dt)*1e9)
+        deadline_ns = int((host_now+observation.dt/rate)*1e9)
         if environment_clock and result.command.mode == 'track' and self.executor.active is not None:
             # A forwarded decision cannot extend its source/proposal evidence.
             deadline_ns = min(deadline_ns, self.active_host_deadline_ns)
-        envelope = CommandEnvelope(packet, 'pyrobo:execution', self.epoch, self.sequence, deadline_ns)
-        await self.commands.publish(envelope, stamp_ns=int(now*1e9), clock=self.config.clock,
+        bound = (SourceCommandBound(source_context(state_frame), state_frame.clock,
+                                    state_frame.stamp_ns+round(observation.dt*1e9)) if source_driven else None)
+        envelope = CommandEnvelope(packet, 'pyrobo:execution', self.epoch, self.sequence, deadline_ns, bound)
+        publication_stamp_ns = state_frame.stamp_ns if source_driven else int(now*1e9)
+        await self.commands.publish(envelope, stamp_ns=publication_stamp_ns, clock=self.config.clock,
                                     metadata=state_frame.metadata)
         await self.diagnostics.publish({'pid': os.getpid(), 'compute_ms': (perf_counter()-started)*1000,
             'timestamp': now,
             'safe': result.safe, 'reason': result.diagnostics.reason, 'mode': result.command.mode,
             'clearance_m': result.diagnostics.clearance_m, 'accepted': self.executor.accepted,
             'rejected': self.executor.rejected, 'expirations': self.executor.expirations,
-            'last_rejection': self.executor.last_rejection}, stamp_ns=int(now*1e9), clock=self.config.clock,
+            'last_rejection': self.executor.last_rejection, 'scheduling': self.config.scheduling,
+            'source_rate': rate, 'actuator_horizon_s': observation.dt,
+            'host_lease_s': (deadline_ns-int(host_now*1e9))/1e9,
+            **self.progress.diagnostics()}, stamp_ns=publication_stamp_ns, clock=self.config.clock,
                                        metadata=state_frame.metadata)
+        return envelope

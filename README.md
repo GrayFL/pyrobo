@@ -181,18 +181,25 @@ python -m pytest -q
 MujocoSim 提供端。默认不允许运动，仿真运动也须明确 `motion_enabled=True`。
 
 `NavigationInputs` 显式转换定位和测量状态；`NavigationCommandOutput` 保留
-命令身份及主机期限。`StackConfig.clock` 区分源环境时间与主机安全时间。
+命令身份、主机期限及可选的固定源时间终点。`StackConfig.clock` 区分源环境时间与主机安全时间，
+`StackConfig.scheduling` 独立选择默认 `realtime` 或显式 `environment` 调度。
 同一导航组合支持本地、线程和进程执行，包装层没有引擎选择分支。
 
 ```bash
 python -m pyrobo.apps.navigation_provider --key demo --clock simulation \
-  --execution thread --duration 20 --output navigation.json
+  --execution thread --scheduling environment --duration 20 --output navigation.json
 ```
 
 该消费程序连接已经启动的设备；无需安装 MuJoCo 或 MujocoSim。默认示例
 使用固定预建空房地图、明确的平面定位投影及相同操作限速，不是 SLAM 验收。
 安装边界、字段、停止模式降级、reset 与兼容要求见
 [运行时设备与导航](pyrobo/rsim/README.md)。
+
+内存提供端显式使用 `MemoryChassisFactory(scheduling='accelerated', speedup=2)`
+时，物理步长固定，倍率只调整主机节奏；`pause()` 退役命令，`resume()` 和有效倍率变化
+进入新 episode 并保留物理时间，只有 `reset()` 将时间归零。环境导航默认读取最新源帧，
+重复帧不计算，实际消费间隔作为控制 dt；计算过载会跳帧或安全停止。倍率是配置目标，
+报告中的实测 RTF 才是实际吞吐，不能将配置 10 倍等同于实现 10 倍闭环。
 
 完整交互工具现位于 `pyrobo.apps.pygame_sim`、`pyrobo.apps.web_sim`，
 配置、Web 静态资源及小型回归场景随包管理。旧 examples 入口只做兼容委托；

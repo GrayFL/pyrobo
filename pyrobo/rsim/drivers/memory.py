@@ -18,7 +18,7 @@ class MemoryChassisFactory:
     This uses pyrobo's finite-force plant, not the retired RSim ideal kinematics.
     """
     INTERFACE_VERSION: ClassVar[str] = 'chassis-ports-v1'
-    FACTORY_VERSION: ClassVar[str] = 'memory-chassis-v1'
+    FACTORY_VERSION: ClassVar[str] = 'memory-chassis-v2'
     name: str = 'memory-chassis'
     clock: str = 'simulation'
     frame: str = 'world'
@@ -31,6 +31,7 @@ class MemoryChassisFactory:
     dynamics: DynamicsConfig = field(default_factory=DynamicsConfig)
     dt: float = .02
     speedup: float = 1.
+    scheduling: str = 'realtime'
     history: int = 32
     max_ttl: float = .5
     motion_enabled: bool = False
@@ -53,6 +54,8 @@ class MemoryChassisFactory:
                 raise ValueError('geometry bounds must be ordered')
         if not all(math.isfinite(v) and v > 0 for v in (self.dt, self.speedup, self.max_ttl)):
             raise ValueError('dt, speedup and max_ttl must be finite and positive')
+        if self.scheduling not in ('realtime', 'accelerated'):
+            raise ValueError('memory scheduling must be realtime or accelerated')
         if not isinstance(self.motion_enabled, bool):
             raise TypeError('motion_enabled must be a boolean')
         self.port_specs(self.clock, history=self.history, max_ttl=self.max_ttl)

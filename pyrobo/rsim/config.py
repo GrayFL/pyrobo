@@ -49,12 +49,26 @@ class StackConfig:
     max_result_age: float = .25
     adaptive_clearance: bool = True
     clock: str = 'host:monotonic'
+    scheduling: str = 'realtime'
+    environment_policy: str = 'latest'
+    tick_capacity: int = 4
+    environment_history: int = 128
     command_speed_limit: float | None = None
     command_yaw_limit: float | None = None
 
     def __post_init__(self):
         if not isinstance(self.clock, str) or not self.clock:
             raise ValueError('clock must explicitly identify the environment time domain')
+        if self.scheduling not in ('realtime', 'environment', 'lockstep'):
+            raise ValueError('navigation scheduling must be realtime, environment or lockstep')
+        if self.environment_policy not in ('latest', 'every'):
+            raise ValueError('environment policy must be latest or every')
+        if self.environment_policy == 'every' and self.scheduling != 'environment':
+            raise ValueError('every tick delivery requires environment scheduling')
+        for name in ('tick_capacity', 'environment_history'):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f'{name} must be a positive integer')
         for name in ('command_speed_limit', 'command_yaw_limit'):
             value = getattr(self, name)
             if value is not None and (not math.isfinite(value) or value <= 0):

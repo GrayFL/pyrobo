@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 from time import monotonic, monotonic_ns
 
@@ -79,7 +80,7 @@ def test_underload_source_rate_has_fixed_physics_dt(rate):
             assert 0 < actual < 1.15*rate
             return {'configured_rate': rate, 'measured_rtf': actual, 'wall_s': elapsed, 'samples': rows}
     result = asyncio.run(run())
-    path = Path('assets/refactor-v4.1')/f'underload-rate-{rate:g}.json'
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', '')/f'underload-rate-{rate:g}.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2)+'\n')
 

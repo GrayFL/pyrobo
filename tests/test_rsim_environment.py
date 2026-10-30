@@ -139,7 +139,7 @@ def test_same_lightweight_navigation_runs_in_both_scheduling_modes(scheduling):
         return await navigate(ChassisPortsDevice.from_component(source), config=config,
                               map_data=room_map(spacing=.3), execution='process', duration=20.)
     report = asyncio.run(run())
-    path = Path('assets/refactor-v4.1')/f'paired-lightweight-{scheduling}.json'
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', '')/f'paired-lightweight-{scheduling}.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     assert report['arrived'] and not report['collided'], report
@@ -192,7 +192,7 @@ def test_navigation_resumes_after_pause_without_any_old_command_acceptance():
         report.update(accepted_commands=accepted, lifecycle_actions=actions)
         return report
     report = asyncio.run(run())
-    path = Path('assets/refactor-v4.1/environment-pause-resume.json')
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', '')/'environment-pause-resume.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     assert report['arrived'] and not report['collided'], report

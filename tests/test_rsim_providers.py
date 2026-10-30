@@ -1,6 +1,7 @@
 """Same consumer graph, fixed map and goal across independent providers."""
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,9 @@ def test_identical_public_navigation_reaches_and_stops(provider, execution, tmp_
     backend, source = provider
     report = asyncio.run(navigate(ChassisPortsDevice.from_component(source), map_data=room_map(),
                                   execution=execution, duration=20.))
-    log = Path('assets/refactor-v4')/f'navigation-{backend}-{execution}.json'
+    evidence = os.environ.get('PYROBO_EVIDENCE_RUN')
+    root = Path('assets/refactor-v4.1')/evidence if evidence else Path('assets/refactor-v4')
+    log = root/f'navigation-{backend}-{execution}.json'
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     assert report['arrived'] and not report['collided'], report

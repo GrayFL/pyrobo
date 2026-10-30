@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from time import monotonic, monotonic_ns, process_time
@@ -37,7 +38,8 @@ def lockstep_config(*, clock='simulation', control_period=.1):
 
 
 async def run_lockstep(source, *, physics_timestep, requested_substeps, map_data,
-                       goal=(.8, 0., 0.), config=None, max_steps=250, episodes=1, timeout=5.):
+                       goal=(.8, 0., 0.), config=None, max_steps=250, episodes=1, timeout=5.,
+                       execution='local'):
     """Own an unstarted compatible provider and run real accepted/advanced steps.
 
     Provider selection belongs to the caller. This function accesses only public
@@ -51,10 +53,11 @@ async def run_lockstep(source, *, physics_timestep, requested_substeps, map_data
                                        control_period=physics_timestep*requested_substeps)
     mission = NavigationMission(map_data, goal, clock=config.clock)
     runner = LockstepNavigation(device, source, mission.maps, mission.missions, config,
-        physics_timestep=physics_timestep, requested_substeps=requested_substeps, timeout=timeout)
+        physics_timestep=physics_timestep, requested_substeps=requested_substeps, timeout=timeout,
+        execution=execution)
     started, cpu_started = monotonic(), process_time()
     reports = []
-    async with Runtime(runner):
+    async with Runtime(*runner.roots, placement=runner.placements()):
         ready = monotonic()
         for repetition in range(episodes):
             if repetition:
@@ -101,11 +104,14 @@ async def run_lockstep(source, *, physics_timestep, requested_substeps, map_data
     return {'arrived': all(report['arrived'] for report in reports),
             'collided': any(report['collided'] for report in reports), 'episodes': reports,
             'physics_timestep': physics_timestep, 'requested_substeps': requested_substeps,
+            'execution': execution, 'coordinator_pid': os.getpid(),
             'configuration_fingerprint': config.fingerprint(), 'elapsed_host_s': elapsed,
             'runtime_open_s': ready-started, 'runtime_close_s': elapsed-(before_close-started),
             'physical_delta_s': source_delta, 'end_to_end_rtf': source_delta/elapsed,
             'timing_scope': 'Runtime open, control transactions/resets, and close; excludes factory/build/import',
             'process_cpu_s': process_time()-cpu_started,
+            'resource_scope': 'coordinator process; navigation workers excluded' if execution == 'process'
+                              else 'single process',
             'process_lifetime_peak_rss_bytes': _peak_rss_bytes()}
 
 
@@ -118,6 +124,7 @@ def main(argv=None):
     parser.add_argument('--substeps', type=int, default=5)
     parser.add_argument('--max-steps', type=int, default=250)
     parser.add_argument('--episodes', type=int, default=1)
+    parser.add_argument('--execution', choices=('local', 'process'), default='local')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     module, name = args.factory.split(':', 1)
@@ -127,7 +134,7 @@ def main(argv=None):
     source = factory(**options).build()
     report = asyncio.run(run_lockstep(source, physics_timestep=args.physics_timestep,
         requested_substeps=args.substeps, map_data=room_map(spacing=.3), max_steps=args.max_steps,
-        episodes=args.episodes))
+        episodes=args.episodes, execution=args.execution))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')

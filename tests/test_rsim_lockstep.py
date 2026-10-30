@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 from time import monotonic_ns
 import time
@@ -43,7 +44,7 @@ def assembly(source):
 def test_real_memory_lockstep_reaches_and_explicit_reset_repeats_exact_trajectory():
     report = asyncio.run(run_lockstep(world(), physics_timestep=.02, requested_substeps=5,
                                      map_data=room_map(spacing=.3), episodes=2))
-    path = Path('assets/refactor-v4.1/phase3/memory-repeated.json')
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', 'phase3')/'memory-repeated.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     assert report['arrived'] and not report['collided']

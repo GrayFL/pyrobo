@@ -382,8 +382,8 @@ class Execution(Component):
                                     state_frame.stamp_ns+round(observation.dt*1e9)) if source_driven else None)
         envelope = CommandEnvelope(packet, 'pyrobo:execution', self.epoch, self.sequence, deadline_ns, bound)
         publication_stamp_ns = state_frame.stamp_ns if source_driven else int(now*1e9)
-        await self.commands.publish(envelope, stamp_ns=publication_stamp_ns, clock=self.config.clock,
-                                    metadata=state_frame.metadata)
+        publication = await self.commands.publish(envelope, stamp_ns=publication_stamp_ns, clock=self.config.clock,
+                                                  metadata=state_frame.metadata)
         await self.diagnostics.publish({'pid': os.getpid(), 'compute_ms': (perf_counter()-started)*1000,
             'timestamp': now,
             'safe': result.safe, 'reason': result.diagnostics.reason, 'mode': result.command.mode,
@@ -394,4 +394,6 @@ class Execution(Component):
             'host_lease_s': (deadline_ns-int(host_now*1e9))/1e9,
             **self.progress.diagnostics()}, stamp_ns=publication_stamp_ns, clock=self.config.clock,
                                        metadata=state_frame.metadata)
-        return envelope
+        # Transport preparation may freeze/copy a dataclass payload. Return
+        # the actual published envelope so later acceptance binds that Frame.
+        return publication.data

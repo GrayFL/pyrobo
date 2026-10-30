@@ -204,10 +204,11 @@ python -m pyrobo.apps.navigation_provider --key demo --clock simulation \
 `LockstepNavigation` 将同一 `NavigationStack` 接到受控提供端：冻结状态、地图和任务，
 计算并接纳带原期限的命令，再等待实际 `PhysicsAdvanced` 确认完整固定子步。
 `MemoryChassisFactory(scheduling='controlled')` 不自行推进；同一装配也可接
-MuJoCo 的 controlled 提供端。单进程公开例程可直接运行：
+MuJoCo 的 controlled 提供端。公开例程可选择单进程或三个独立导航工作进程：
 
 ```bash
 python -m pyrobo.apps.lockstep_navigation --episodes 2 --output lockstep.json
+python -m pyrobo.apps.lockstep_navigation --execution process --episodes 2 --output process-lockstep.json
 ```
 
 锁步配置显式使用固定 seed、`RRTConnectConfig(time_budget=None)` 的扩展次数预算，
@@ -215,6 +216,9 @@ python -m pyrobo.apps.lockstep_navigation --episodes 2 --output lockstep.json
 和缓存。提供端接纳或推进确认丢失后停止，先查询实际状态或显式 reset，不能直接猜测下一步。
 例程记录实际完成子步和逐阶段原始计时；完整 RTF 包含 Runtime 启动、运行和关闭，
 不含 Factory 构造和导入。接口与安全边界见[锁步说明](pyrobo/rsim/README.md#controlled-navigation)。
+跨进程模式逐阶段等待精确输入发布与实际计算完成，分别确认局部导航、全局规划和执行门；
+丢确认后的同一请求重试不会重复计算或物理推进。报告中的 CPU/RSS 明确只统计协调进程，
+工作进程资源需要单独采集。
 
 完整交互工具现位于 `pyrobo.apps.pygame_sim`、`pyrobo.apps.web_sim`，
 配置、Web 静态资源及小型回归场景随包管理。旧 examples 入口只做兼容委托；

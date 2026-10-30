@@ -2,10 +2,13 @@
 from time import monotonic_ns
 import math
 
-from rsim import CommandAccepted, CommandIdentity, Component, PhysicsAdvanced, SingleProcessStepper, StepContext
+from rsim import (CommandAccepted, CommandIdentity, Component, PhysicsAdvanced, ProcessPlacement,
+                  SingleProcessStepper, StageBarrier, StageRequest, StepContext)
 
 from ..components import NavigationInputs, NavigationCommandOutput
 from ..scheduling import snapshot_from, source_context
+from ..components.navigation_stages import (LocalNavigationStage, GlobalPlanningStage, ExecutionStage,
+                                            encode_revision, snapshot_revision, wait_publication)
 from .navigation import NavigationStack
 
 
@@ -18,7 +21,8 @@ class LockstepNavigation(Component):
     assumption that physical progress was zero.
     """
     def __init__(self, device, management, maps, missions, config, *, physics_timestep,
-                 requested_substeps, timeout=5., planar_projection=True):
+                 requested_substeps, timeout=5., planar_projection=True, execution='local',
+                 stage_timeout=1., stage_retries=1, stage_request_ttl=.5):
         if config.scheduling != 'lockstep':
             raise ValueError('LockstepNavigation requires scheduling="lockstep"')
         if (not math.isfinite(physics_timestep) or physics_timestep <= 0
@@ -29,19 +33,54 @@ class LockstepNavigation(Component):
             raise ValueError('requested fixed substeps must equal the configured control period')
         if not isinstance(management, Component):
             raise TypeError('management must be an explicitly owned provider or device Component')
+        if execution not in ('local', 'process'):
+            raise ValueError('lockstep execution must be local or process')
+        if execution == 'process' and (not math.isfinite(stage_request_ttl)
+                or not 0 < stage_request_ttl <= .5
+                or type(stage_retries) is not int or stage_retries < 0):
+            raise ValueError('stage request TTL must fit the .5s endpoint limit and retries must be nonnegative')
+        self.execution = execution
+        self.stage_timeout, self.stage_retries = stage_timeout, stage_retries
+        self.stage_request_ttl = stage_request_ttl
         self.device, self.management, self.config = device, management, config
         self.requested_substeps, self.timeout = requested_substeps, timeout
         self.inputs_adapter = NavigationInputs(device, maps, missions, config,
                                                planar_projection=planar_projection)
         self.navigation = NavigationStack(self.inputs_adapter.states, maps, missions, config)
         self.output = NavigationCommandOutput(self.navigation.commands, device, config)
+        self.stages = {}
+        if execution == 'process':
+            self.stages = {
+                'local': LocalNavigationStage(self.navigation.local, timeout=stage_timeout),
+                'global': GlobalPlanningStage(self.navigation.global_planning, self.inputs_adapter.states,
+                                              missions, timeout=stage_timeout),
+                'execution': ExecutionStage(self.navigation.execution, actuator_horizon=self.interval_ns/1e9,
+                                            timeout=stage_timeout),
+            }
+        self._stage_sinks = {name: stage.stage_request for name, stage in self.stages.items()}
         super().__init__(management, self.inputs_adapter, self.navigation.local,
                          self.navigation.global_planning, self.navigation.execution, self.output,
+                         *self.stages.values(),
                          inputs=(device.pose, device.state, maps, missions))
         self.records = []
         self.stepper = None
         self._snapshot = self._owner_sample = None
         self._computed_frame = None
+        self.barrier = None
+        self._route_publication = None
+        self._navigation_status = None
+
+    @property
+    def roots(self):
+        """Explicit management port demands for the parent coordinator."""
+        return (self, *(stage.stage_request for stage in self.stages.values()))
+
+    def placements(self, prefix='lockstep'):
+        """Place each algorithm with its stage endpoint in one dedicated worker."""
+        if not self.stages:
+            return None
+        return {component: ProcessPlacement(f'{prefix}_{name}')
+                for name, stage in self.stages.items() for component in (stage, stage.algorithm)}
 
     async def open(self):
         status = await self.management.describe()
@@ -49,6 +88,10 @@ class LockstepNavigation(Component):
             raise ValueError('lockstep requires a ready, unpaused controlled source')
         context = StepContext.from_mapping(status['context'])
         self.records = []
+        self._route_publication = self._navigation_status = None
+        if self.stages:
+            self.barrier = StageBarrier(tuple(self.stages), context=context,
+                timeout=self.stage_timeout, retries=self.stage_retries, request_ttl=self.stage_request_ttl)
         self.stepper = SingleProcessStepper(sample=self._sample, compute=self._compute,
             accept=self._accept, advance=self._advance, stop=self.management.abort,
             timeout=self.timeout, context=context, require_physics_ack=True,
@@ -81,6 +124,8 @@ class LockstepNavigation(Component):
             raise ValueError('physical source changed during navigation computation')
 
     async def _compute(self, context, snapshot):
+        if self.stages:
+            return await self._compute_stages(context, snapshot)
         command = await self.navigation.step_once(context, snapshot,
                                                   actuator_horizon=self.interval_ns/1e9)
         self._check_inputs()
@@ -89,7 +134,33 @@ class LockstepNavigation(Component):
         self._computed_frame = self.navigation.commands.frames[-1]
         if self._computed_frame.data is not command:
             raise ValueError('computed command was replaced before its stage snapshot was captured')
+        self._navigation_status = str(self.navigation.local.navigator.status)
         return command
+
+    async def _compute_stages(self, context, snapshot):
+        base = snapshot_revision(snapshot)
+        self.barrier.begin(context)
+        local = await self.barrier.call(self._stage_sinks['local'], StageRequest(context, 'local',
+            encode_revision({'snapshot': base, 'route': self._route_publication})))
+        planned = await self.barrier.call(self._stage_sinks['global'], StageRequest(context, 'global',
+            encode_revision({'snapshot': base, 'request': local.result['request'],
+                             'request_id': local.result['request_id']})))
+        executed = await self.barrier.call(self._stage_sinks['execution'], StageRequest(context, 'execution',
+            encode_revision({'snapshot': base, 'proposal': local.result['proposal']})))
+        self._computed_frame = await wait_publication(self.navigation.commands, executed.result['command'])
+        self._check_inputs()
+        if source_context(self._computed_frame) != context:
+            raise ValueError('execution ACK command belongs to another source context')
+        if planned.result['route'] is not None:
+            self._route_publication = planned.result['route']
+        self._navigation_status = local.result['status']
+        self.barrier.complete()
+        return self._computed_frame.data
+
+    def _stage_evidence(self):
+        return {} if self.barrier is None else {
+            'stages': [ack.to_dict() for ack in self.barrier.acks],
+            'stage_calls': list(self.barrier.timings), 'barrier_phase': self.barrier.phase}
 
     async def _accept(self, context, command):
         self._check_inputs()
@@ -125,7 +196,7 @@ class LockstepNavigation(Component):
                 'context': self.stepper.context.to_dict(), 'error': repr(error),
                 'needs_synchronization': self.stepper.needs_synchronization,
                 'trace': [(name, context.to_dict()) for name, context in self.stepper.trace],
-                'timings': list(self.stepper.timings)})
+                'timings': list(self.stepper.timings), **self._stage_evidence()})
             raise
         record = {'ok': True, 'host_started_ns': started, 'host_finished_ns': monotonic_ns(),
                   'context': snapshot.context.to_dict(), 'input_revision': list(snapshot.input_revision),
@@ -133,9 +204,9 @@ class LockstepNavigation(Component):
                   'command': {'native': command.value['native'].tolist(), 'mode': command.value['mode']},
                   'accepted': self.stepper.last_command_ack.to_dict(),
                   'advanced': self.stepper.last_physics_ack.to_dict(),
-                  'status': str(self.navigation.local.navigator.status),
+                  'status': self._navigation_status,
                   'trace': [(name, context.to_dict()) for name, context in self.stepper.trace],
-                  'timings': list(self.stepper.timings)}
+                  'timings': list(self.stepper.timings), **self._stage_evidence()}
         self.records.append(record)
         return record
 
@@ -143,7 +214,13 @@ class LockstepNavigation(Component):
         async def reset_source():
             await self.management.reset()
             await self.management.resume()
-            return (await self.management.describe())['context']
+            context = StepContext.from_mapping((await self.management.describe())['context'])
+            for stage in self.stages.values():
+                await stage.reset_stage(context, ttl=self.stage_request_ttl)
+            if self.barrier is not None:
+                self.barrier.reset(context)
+            self._route_publication = None
+            return context
         await self.stepper.reset(reset_source)
         self._snapshot = self._owner_sample = None
         self._computed_frame = None

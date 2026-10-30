@@ -212,7 +212,7 @@ An identical cached request returns the original ACK even after command expiry.
 A changed request cannot reuse that context; an evicted or old context cannot
 advance again. Reset invalidates old proposals, commands and cached ACKs.
 
-`LockstepNavigation` is the public single-process coordinator. Its source is an
+`LockstepNavigation` is the public coordinator. Its source is an
 explicit management dependency alongside a `ChassisPortsDevice` view:
 
 ```python
@@ -227,7 +227,7 @@ runner = LockstepNavigation(
     ChassisPortsDevice.from_component(source), source, maps, missions, config,
     physics_timestep=.02, requested_substeps=5,
 )
-async with Runtime(runner):
+async with Runtime(*runner.roots, placement=runner.placements()):
     record = await runner.step()
     status = await runner.synchronize()
     await runner.reset()
@@ -263,10 +263,56 @@ per-step raw stage timings, acceptance/physics ACKs and trajectories. Control
 window RTF counts completed physical intervals. End-to-end RTF includes Runtime
 open, transactions/resets and close, but excludes Factory construction/import.
 CPU is this process's elapsed CPU time; optional RSS is its lifetime peak, not an
-isolated run peak. These are single-process measurements. Distributed stage
-barriers require a separate coordinator and are not supplied by this class.
+isolated run peak. In process execution these exclude navigation workers, as
+recorded by `resource_scope`.
 
-The consumer CLI accepts `--scheduling realtime|environment`. Reports include
+### Navigation in independent processes
+
+Set `execution='process'` on `LockstepNavigation` or `run_lockstep`, or pass
+`--execution process` to the lockstep CLI. Open `Runtime(*runner.roots,
+placement=runner.placements())`: the roots explicitly request the stage command
+ports, and placements pair each algorithm with its endpoint in one dedicated
+worker. `LocalNavigationStage`, `GlobalPlanningStage` and `ExecutionStage` are
+exported from `pyrobo.rsim`. An endpoint refuses an algorithm in another Runtime;
+calling ordinary Python methods on a placed component is not remote execution.
+The physical owner and state conversion remain in the coordinator process in
+this example. Provider selection and the three navigation algorithms are unchanged.
+
+The compute phase uses RSim `StageBarrier` in local → global → execution order.
+Each `StageRequest.input_revision` is canonical JSON identifying the frozen
+state, map, mission and required upstream publication. Revisions use the original
+`SampleId`, source clock and integer stamp; a receiver's history sequence is a
+different local cursor. Endpoints wait for the exact publication even when its
+management request arrives first. Missing/changed revisions fail explicitly.
+An ACK is emitted only after computation and output publication complete.
+
+The local ACK says whether this step published a new planning request and gives
+its exact identity. The global stage computes that request or acknowledges the
+explicit no-op; it cannot substitute an old latest request. The next local step
+waits for the route publication named by the previous global ACK. Execution waits
+for the exact proposal, and its ACK identifies the actual published command
+Frame used by acceptance. Transport preparation may freeze/copy the envelope;
+`Execution.step_once` returns the actual published payload.
+
+Identical stage retries return cached completion, while changed revisions,
+evicted steps and old generations are rejected. `stage_timeout`, `stage_retries`
+and `stage_request_ttl` bound coordinator calls; request TTL must fit the .5 s
+endpoint limit. These management deadlines do not renew motion leases. The
+physics transaction remains separate and still requires its own acceptance and
+advance ACKs. A cancelled/failed stage cannot authorize physics. If physics was
+already committed but its ACK was lost, query the owner and retry only the exact
+cached request or reset; do not assume zero advancement.
+
+`runner.reset()` resets the physical source, resumes it and resets every stage
+and the barrier to the same real new generation at step zero. Dead workers need
+a new Runtime. Ordinary pause/resume at a nonzero step is not a stage reset.
+Trace records include each typed stage ACK, actual worker PID, compute interval,
+coordinator call interval and retry count, alongside the physics ACK. Repeated
+reset trajectories, dropped ACKs, duplicate requests, timeouts, cancellation and
+actual worker exit are exercised in `tests/test_rsim_navigation_stages.py` and
+`tests/test_rsim_lockstep_process.py`.
+
+The environment consumer CLI accepts `--scheduling realtime|environment`. Reports include
 the chosen mode, exact source contexts, measured RTF, actual control dt, compute
 counts and command drops. `rtf` divides the first-to-last observed sample's source
 delta by `observed_wall_s`; `elapsed_host_s` also includes Runtime startup/close.

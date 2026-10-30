@@ -1,6 +1,7 @@
 """The same public controlled-navigation graph, with a real MuJoCo owner."""
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +34,7 @@ def test_real_mujoco_uses_identical_lockstep_navigation_and_reset_replays(tmp_pa
     source = make_source(tmp_path)
     report = asyncio.run(run_lockstep(source, physics_timestep=.002, requested_substeps=50,
                                      map_data=room_map(spacing=.3), episodes=2))
-    path = Path('assets/refactor-v4.1/phase3/mujoco-repeated.json')
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', 'phase3')/'mujoco-repeated.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     assert report['arrived'] and not report['collided'], report
@@ -88,6 +89,6 @@ def test_real_mujoco_navigation_lost_ack_requires_query_reset_then_reaches(tmp_p
             assert np.linalg.norm((await source.pose.get()).data.position[:2]-[.8, 0.]) < .18
             return {'failed_owner': status, 'recovered_owner': await source.describe(), 'trace': runner.records}
     report = asyncio.run(run())
-    path = Path('assets/refactor-v4.1/phase3/mujoco-lost-ack.json')
+    path = Path('assets/refactor-v4.1')/os.environ.get('PYROBO_EVIDENCE_RUN', 'phase3')/'mujoco-lost-ack.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')

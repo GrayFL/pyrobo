@@ -18,6 +18,10 @@ from pyrobo import ControlMode, MotionPolicy
 def app():
     config = load_config(selectors={'map.preset': 'empty'})
     instance = App(config, headless=True)
+    # SDL queues initial focus events at window creation. Consume them with
+    # neutral input before simulating a user's key press; focus restoration
+    # intentionally suppresses controls held in the same event batch.
+    instance.frame()
     yield instance
     instance.close()
 

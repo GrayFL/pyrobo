@@ -1,0 +1,31 @@
+# Elastic Band + Kinodynamic DWA
+
+实现依据与验收清单见 [设计文档](../../../docs/eb_dwa_design.md)，开发前结果见 [基线报告](../../../docs/eb_dwa_baseline.md)。目前独立几何模块已实现；空间评分、完整控制器和应用接入按后续阶段交付，不能把几何测试当作闭环导航成功。
+
+## 几何模块
+
+`EBPathRepairer.update(observation, global_path, goal=..., coverage_m=...)` 返回 `RepairResult`。成功时 `reference` 是 `EBReference`；失败时它是 `None`，并返回 `no_safe_rejoin`、`curvature_violation`、`collision`、`node_budget` 等明确原因。它不积分底盘、不生成控制命令。
+
+`PathTracker` 保存完整全局路线和可回退进度。检测不仅包含矩形冲突，还包含低于期望的间距、急角、曲率、曲率变化和锯齿。检查完整原始边和旋转包络；相近缺陷合并为活动区。输出沿全局弧长扩展，覆盖进入窗口的全部冲突、重新接入区及尾部。`max_coverage_m` 限制全局路线的检查跨度；绕行后的实际参考长度另记为 `eb_coverage_m`。
+
+重新接入点必须在全部相关冲突之后，并有至少 `rejoin_validation_m` 的安全后续路线。长墙两端可能各产生一个碰撞区间，但中间间距缺陷会将其合并为一个优化区。`preferred_clearance` 是软目标；`minimum_clearance` 是叠加于真实矩形、offset、margin 和点半径之上的硬下限，绝不会自动降低。
+
+优化变量仅为活动节点 XY。起点、远处直线和重新接入后的尾部固定；曲线端点切线固定。三次 Hermite 曲线保证连续切线，残差包括按弧长尺度归一化的平滑、曲率能量与变化、车体间距、局部锚定和退化段惩罚。稀疏 Jacobian 利用四节点局部依赖；矩形距离在正对墙面时不可微，使用中心差分避免单侧扰动产生错误的远墙方向。
+
+优化代价不是安全证明。输出必须通过共享 `PointObstacles.clearances` 的完整矩形和物理边界检查。每个三次曲线区间使用导数上界约束平移、偏航和角点行程，只有间距下界为正才接受；不确定区间细分，超出深度/工作量上限则拒绝。阿克曼另验证整段曲率上界 `1 / minimum_turn_radius`。差速起始方向修正调用同一矩形旋转检查。外接圆仅用于角点运动界限。
+
+无缺陷直线不运行优化。已有参考滚动重锚定并重新验证；点云侵入、覆盖耗尽或显式 `force=True` 触发修复。相同路线、目标、坐标、边界及几何条件下可复用上一曲线；倒退不删除原路径，换目标、路径、配置、明显重定位和时间回退会清除不兼容缓存。
+
+每次更新限制残差评估总数，单个拓扑求解限制迭代数；软时间预算不能抢占 SciPy/点云查询或最终验证。所有真实耗时均记录。低预算下可在最多 `max_refinement_cycles` 个周期中续算，只保存一条有界中间曲线。未验证的中间曲线仅能作为下一次优化初值，绝不能作为输出参考。没有可行输出时返回失败；若已有验证过的初值，则可以明确返回 `validated_fallback`。`eb_solver_pending` 表示仍在续算，不表示参考已安全或任务已完成。
+
+首选 nominal 初始化；失败后才尝试有上限的左右绕行初值。每次尝试的求解状态、实际评估次数、耗时与几何验证结果分别记录。错误全局拓扑和汽车换向规划不由 XY EB 保证解决，上层需要安全停车和重规划。
+
+`EBReference.yaw` 是几何切线；`gear=-1` 时车头方向为切线加 π。左右 tube 是基于矩形净空的保守平移范围，宽度为正、横向误差向左为正。它们仅供软评分；最终控制仍必须验证真实物理轨迹。
+
+## 独立验证
+
+```bash
+python -m pytest -q tests/test_eb_geometry.py tests/test_geometry.py tests/test_path_tracking.py
+```
+
+测试读取 `pyrobo/apps/scenes/eb_dwa_*.json` 中的相同世界和参考路线。当前阶段测试显式拆出 `experiment` 元数据；其 Web/CLI 执行支持将在应用接入阶段完成。已有 DWA/TEB、物理积分器、碰撞内核和导航默认行为均未修改。

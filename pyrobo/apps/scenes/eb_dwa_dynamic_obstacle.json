@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "name": "EB-DWA · 新障碍侵入缓存",
+  "description": "EB-DWA 开发验收场景；固定参考和仿真事件在 experiment 中保存，车辆动力学和安全门沿用正式 Web 框架。",
+  "config": {
+    "backend": {
+      "model": "differential",
+      "local_optimizer": "dwa",
+      "planner": "rrt_connect",
+      "adaptive_clearance": false
+    },
+    "map": {
+      "preset": "custom",
+      "bounds": [
+        -2,
+        12,
+        -4,
+        8
+      ],
+      "start": [
+        0,
+        0,
+        0
+      ],
+      "goal": [
+        9,
+        0,
+        0
+      ],
+      "boxes": []
+    },
+    "footprint": {
+      "length": 0.5,
+      "width": 0.5,
+      "margin": 0.08,
+      "offset_x": 0
+    },
+    "rrt_connect": {
+      "seed": 7,
+      "clearance": 0,
+      "time_budget": 0.5
+    },
+    "voronoi": {
+      "clearance": 0,
+      "time_budget": 2
+    },
+    "navigation": {
+      "goal_approach_distance": 0
+    }
+  },
+  "polygons": [],
+  "polylines": [],
+  "experiment": {
+    "reference_path": [
+      [
+        0,
+        0
+      ],
+      [
+        9,
+        0
+      ]
+    ],
+    "events": [
+      {
+        "time_s": 2.0,
+        "kind": "add_boxes",
+        "boxes": [
+          [
+            4,
+            5,
+            -0.5,
+            0.5
+          ]
+        ]
+      }
+    ],
+    "expected": "arrived",
+    "max_steps": 800
+  }
+}

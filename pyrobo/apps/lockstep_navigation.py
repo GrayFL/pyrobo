@@ -11,7 +11,7 @@ from time import monotonic, monotonic_ns, process_time
 
 from rsim import Runtime
 from rsim.devices import ChassisPortsDevice
-from pyrobo import DWAConfig, Footprint, pose2d
+from pyrobo import DWAConfig, TEBConfig, Footprint, pose2d
 from pyrobo.planning import RRTConnectConfig
 from pyrobo.rsim import LockstepNavigation, MemoryChassisFactory, StackConfig
 from .navigation_provider import NavigationMission, room_map
@@ -28,12 +28,17 @@ def _peak_rss_bytes():
     return value if sys.platform == 'darwin' else value*1024
 
 
-def lockstep_config(*, clock='simulation', control_period=.1):
+def lockstep_config(*, clock='simulation', control_period=.1, local_optimizer='dwa'):
     """Explicit reproducible demo settings; general StackConfig defaults stay unchanged."""
+    if local_optimizer not in ('dwa', 'teb'):
+        raise ValueError('local_optimizer must be dwa or teb')
+    controller = (TEBConfig(prediction_time=.9, integration_dt=.1, max_iterations=8, time_budget=None)
+                  if local_optimizer == 'teb' else
+                  DWAConfig(prediction_time=.6, integration_dt=.1, linear_samples=3, angular_samples=3))
     return StackConfig(clock=clock, scheduling='lockstep', control_period=control_period,
         execution_period=control_period, adaptive_clearance=False,
         planner=RRTConnectConfig(time_budget=None, max_extensions=1200, shortcut_attempts=30, seed=7, clearance=.08),
-        controller=DWAConfig(prediction_time=.6, integration_dt=.1, linear_samples=3, angular_samples=3),
+        controller=controller,
         footprint=Footprint(.6, .6), command_speed_limit=.45, command_yaw_limit=.75)
 
 
@@ -125,6 +130,7 @@ def main(argv=None):
     parser.add_argument('--max-steps', type=int, default=250)
     parser.add_argument('--episodes', type=int, default=1)
     parser.add_argument('--execution', choices=('local', 'process'), default='local')
+    parser.add_argument('--local-optimizer', choices=('dwa', 'teb'), default='dwa')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     module, name = args.factory.split(':', 1)
@@ -132,9 +138,11 @@ def main(argv=None):
     options = json.loads(args.factory_config.read_text()) if args.factory_config else {
         'scheduling': 'controlled', 'motion_enabled': True}
     source = factory(**options).build()
+    config = lockstep_config(clock=source.state.clock, control_period=args.physics_timestep*args.substeps,
+                             local_optimizer=args.local_optimizer)
     report = asyncio.run(run_lockstep(source, physics_timestep=args.physics_timestep,
         requested_substeps=args.substeps, map_data=room_map(spacing=.3), max_steps=args.max_steps,
-        episodes=args.episodes, execution=args.execution))
+        episodes=args.episodes, execution=args.execution, config=config))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')

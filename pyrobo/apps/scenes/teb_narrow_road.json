@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "name": "TEB · 窄路差速连续弯道",
+  "description": "复现窄路的连续弯道。原始墙体、起终点、0.5 m 方形车体与 0.08 m 安全边距；全局额外净距固定为 0，隔离局部 TEB 的低速曲率回归。",
+  "config": {
+    "backend": {
+      "model": "differential",
+      "planner": "rrt_connect",
+      "local_optimizer": "teb",
+      "adaptive_clearance": false
+    },
+    "app": {
+      "dt": 0.1,
+      "point_spacing": 0.04
+    },
+    "map": {
+      "preset": "custom",
+      "bounds": [
+        0,
+        12,
+        0,
+        9
+      ],
+      "start": [
+        1.4,
+        1.5,
+        0.0
+      ],
+      "boxes": [],
+      "goal": [
+        8.014428997605984,
+        0.6330844188046356,
+        -0.15752800689901578
+      ]
+    },
+    "footprint": {
+      "length": 0.5,
+      "width": 0.5,
+      "margin": 0.08,
+      "offset_x": 0
+    },
+    "differential": {
+      "track": 0.4,
+      "max_speed": 0.9,
+      "max_reverse_speed": 0.5,
+      "max_yaw_rate": 1.5,
+      "max_wheel_speed": 1.4
+    },
+    "dynamics": {
+      "mass": 20,
+      "yaw_inertia": 1.2,
+      "steering_inertia": 0.05,
+      "drive_force": 50,
+      "brake_force": 70,
+      "wheel_force": 35,
+      "yaw_torque": 3,
+      "steering_torque": 1,
+      "longitudinal_drag": {
+        "coulomb": 2,
+        "linear": 8,
+        "quadratic": 1,
+        "epsilon": 0.02
+      },
+      "yaw_drag": {
+        "coulomb": 0.08,
+        "linear": 0.5,
+        "quadratic": 0.1,
+        "epsilon": 0.02
+      },
+      "steering_drag": {
+        "coulomb": 0.02,
+        "linear": 0.3,
+        "quadratic": 0,
+        "epsilon": 0.02
+      },
+      "steering_spring": 0.8,
+      "steering_speed_spring": 0.6,
+      "velocity_time_constant": 0.3,
+      "yaw_time_constant": 0.25,
+      "steering_frequency": 6,
+      "steering_damping": 1,
+      "drive_acceleration": 0.9,
+      "brake_acceleration": 1.2,
+      "yaw_acceleration": 2.5,
+      "steering_acceleration": 6,
+      "linear_jerk": 3,
+      "yaw_jerk": 8,
+      "steering_jerk": 40,
+      "friction": 0.6,
+      "gravity": 9.81,
+      "lateral_acceleration": 1.2,
+      "substep": 0.02,
+      "timeout": 0.3,
+      "stop_epsilon": 0.0001
+    },
+    "rrt_connect": {
+      "step_size": 0.65,
+      "max_extensions": 1800,
+      "time_budget": 0.5,
+      "goal_bias": 0.15,
+      "shortcut_attempts": 60,
+      "path_spacing": 0.15,
+      "clearance": 0.0,
+      "seed": 7,
+      "bridge_sampling": true
+    },
+    "voronoi": {
+      "boundary_step": 0.5,
+      "max_edge_length": 15,
+      "connection_neighbors": 32,
+      "path_spacing": 0.15,
+      "clearance": 0.0,
+      "safety_distance": 0.5,
+      "safety_weight": 1,
+      "time_budget": 2,
+      "max_sites": 20000,
+      "max_edge_checks": 50000,
+      "max_expansions": 10000
+    },
+    "teb": {
+      "lookahead": 1.3
+    },
+    "navigation": {
+      "lookahead": 1.3,
+      "goal_tolerance": 0.18,
+      "yaw_tolerance": 0.1,
+      "goal_approach_distance": null
+    }
+  },
+  "polygons": [],
+  "polylines": [
+    {
+      "points": [
+        [
+          0.275,
+          4.3311004277021485
+        ],
+        [
+          3.203298802488502,
+          4.182684510899936
+        ],
+        [
+          3.129090372287702,
+          7.126256009417541
+        ],
+        [
+          8.286523429677626,
+          7.249935468286358
+        ],
+        [
+          9.659366178001008,
+          5.679206246292441
+        ],
+        [
+          9.313063315728565,
+          2.6614277329731157
+        ],
+        [
+          7.222881215725063,
+          1.8080392780583994
+        ],
+        [
+          11.725,
+          1.2267461988147135
+        ]
+      ],
+      "width": 0.55
+    },
+    {
+      "points": [
+        [
+          2.3870136190747986,
+          0.275
+        ],
+        [
+          2.4241178341751985,
+          2.500644059003899
+        ],
+        [
+          3.957742369269023,
+          2.0306626814620254
+        ],
+        [
+          4.749292038348718,
+          3.0572016239135764
+        ],
+        [
+          4.588508364379501,
+          5.580262773557326
+        ],
+        [
+          6.76526570815142,
+          5.703942232426143
+        ],
+        [
+          5.194536957957196,
+          0.68255639107204
+        ],
+        [
+          5.2687453881579955,
+          0.275
+        ]
+      ],
+      "width": 0.55
+    }
+  ]
+}

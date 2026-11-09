@@ -63,6 +63,11 @@ function sync(fit = false) {
   $("scene-title").textContent = draft.name;
   $("planner").value = c.backend.planner;
   $("model").value = c.backend.model;
+  $("local-optimizer").value = c.backend.local_optimizer;
+  $("teb-settings").hidden = c.backend.local_optimizer !== "teb";
+  $("teb-nodes").value = c.teb?.max_samples ?? 16;
+  $("teb-iterations").value = c.teb?.max_iterations ?? 12;
+  $("teb-budget").value = c.teb?.time_budget ?? "";
   $("body-length").value = c.footprint.length;
   $("body-width").value = c.footprint.width;
   for (const name of ["start", "goal"]) {
@@ -76,7 +81,7 @@ function sync(fit = false) {
   );
   $("dt").value = c.app.dt;
   $("manual-speed").value = c.teleop.speed_limit;
-  $("horizon").value = c.dwa.prediction_time;
+  $("horizon").value = c[c.backend.local_optimizer].prediction_time;
   $("budget").value = c[c.backend.planner].time_budget;
   $("planner-clearance").value = c[c.backend.planner].clearance;
   $("adaptive-clearance").value = c.backend.adaptive_clearance
@@ -193,6 +198,10 @@ function connect() {
       $("diagnostics").textContent =
         `${data.status} · ${data.planner_status}\n候选 ${data.feasible}/${data.candidates} · 间距 ${data.clearance === null ? "—" : data.clearance.toFixed(2) + " m"}\n${data.assessment}`;
       $("diagnostics").style.whiteSpace = "pre-line";
+      if (data.optimizer) $("diagnostics").textContent += `\n局部算法 ${data.optimizer.toUpperCase()}`;
+      const teb = data.optimizer_diagnostics;
+      if (teb?.teb_status)
+        $("diagnostics").textContent += `\nTEB ${teb.teb_status} · ${teb.teb_nodes} 节点 · ${teb.teb_evaluations} 次计算\n代价 ${teb.teb_cost.toFixed(2)} · ${teb.teb_warm_started ? "复用上次轨迹" : "新轨迹"}`;
       const planningHint = {
         invalid_goal_approach:
           "目标直线入射段与障碍相交，可检查目标朝向或缩短「目标入射距离」。",
@@ -574,7 +583,9 @@ const setters = {
   "body-width": (c, v) => (c.footprint.width = v),
   dt: (c, v) => (c.app.dt = v),
   "manual-speed": (c, v) => (c.teleop.speed_limit = v),
-  horizon: (c, v) => (c.dwa.prediction_time = v),
+  horizon: (c, v) => (c[c.backend.local_optimizer].prediction_time = v),
+  "teb-nodes": (c, v) => (c.teb.max_samples = v),
+  "teb-iterations": (c, v) => (c.teb.max_iterations = v),
   budget: (c, v) => (c[c.backend.planner].time_budget = v),
   "planner-clearance": (c, v) => (c[c.backend.planner].clearance = v),
   mass: (c, v) => (c.dynamics.mass = v),
@@ -598,6 +609,16 @@ for (const [id, set] of Object.entries(setters))
       message(e.message, true);
     }
   };
+$("local-optimizer").onchange = () => {
+  const name = $("local-optimizer").value;
+  change((s) => (s.config.backend.local_optimizer = name));
+};
+$("teb-budget").onchange = () => {
+  try {
+    const value = $("teb-budget").value.trim() ? number("teb-budget") : null;
+    change((s) => (s.config.teb.time_budget = value));
+  } catch (error) { message(error.message, true); sync(); }
+};
 $("model").onchange = () => {
   const model = $("model").value;
   change((s) => {
@@ -606,6 +627,7 @@ $("model").onchange = () => {
     const car = model === "ackermann";
     c.dwa.prediction_time = car ? 2.4 : 1.8;
     c.dwa.lookahead = c.navigation.lookahead = car ? 1.6 : 1.3;
+    c.teb.lookahead = car ? 1.6 : 1.3;
     const clearance =
       0.12 +
       (car

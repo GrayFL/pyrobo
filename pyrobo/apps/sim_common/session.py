@@ -6,13 +6,13 @@ from time import monotonic, perf_counter
 
 import numpy as np
 
-from pyrobo import (ChassisDynamics, ControlMode, DWAEngine, MotionPolicy, NavigationConfig,
+from pyrobo import (ChassisDynamics, ControlMode, DWAEngine, TimedElasticBand, MotionPolicy, NavigationConfig,
                     Navigator, RobotObservation, SafetyGuard, Supervisor, TeleopAdapter, Twist2D, pose2d)
 from pyrobo.core.geometry import planar_state
 from pyrobo.geometry.cache import SnapshotIndex
 from pyrobo.planning import AdaptiveClearancePlanner, RRTConnect, VoronoiPlanner
 from pyrobo.simulation import Simulator2D
-from .config import build_parameters, make_world, parameters
+from .config import build_parameters, controller_parameters, make_world, parameters
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,7 @@ class Snapshot:
     notice: str
     ticks: int
     fault: str = ''
+    local_optimizer: str = 'dwa'
 
 
 def readonly(values):
@@ -60,17 +61,19 @@ class Session:
     def __init__(self, config):
         self.config = config
         self.world, start, goal = self.make_world(config)
-        model, footprint, dynamics, dwa, planner, safety = build_parameters(config)
+        model, footprint, dynamics, controller, planner, safety = build_parameters(config)
         self.model, self.footprint = model, footprint
         self.cloud = self.world.point_cloud(config['app']['point_spacing'])
         plant, index = ChassisDynamics(model, dynamics), SnapshotIndex()
-        optimizer = DWAEngine(dwa, footprint, model=model, dynamics=plant, index=index, input_limits=safety)
+        factory = TimedElasticBand if config['backend']['local_optimizer'] == 'teb' else DWAEngine
+        options = {'teleop_config': controller_parameters(config, 'dwa')} if factory is TimedElasticBand else {}
+        optimizer = factory(controller, footprint, model=model, dynamics=plant, index=index, input_limits=safety, **options)
         factory = RRTConnect if config['backend']['planner'] == 'rrt_connect' else VoronoiPlanner
         global_planner = (AdaptiveClearancePlanner(factory, planner, footprint) if config['backend']['adaptive_clearance']
                           else factory(planner, footprint))
         gate = SafetyGuard(plant, optimizer.command_space, footprint, index=index, config=safety)
         settings = parameters(NavigationConfig, {
-            'lookahead': dwa.lookahead, 'goal_tolerance': dwa.goal_tolerance, 'yaw_tolerance': dwa.yaw_tolerance,
+            'lookahead': controller.lookahead, 'goal_tolerance': controller.goal_tolerance, 'yaw_tolerance': controller.yaw_tolerance,
             **config['navigation']}, 'navigation')
         self.nav = Navigator(model=model, footprint=footprint, dynamics=plant, global_planner=global_planner,
                              local_optimizer=optimizer, settings=settings, index=index, safety=gate,
@@ -190,7 +193,8 @@ class Session:
     def snapshot(self):
         return Snapshot(self.sim.state, self.runtime.mode, self.policy, self.nav.goal, readonly(self.nav.path.xy),
                         readonly(self.trail), self.motion, self.nav.progress, str(self.nav.status), self.planner_status,
-                        self.sim.collided, self.elapsed_ms, self.notice, self.ticks, self.fault)
+                        self.sim.collided, self.elapsed_ms, self.notice, self.ticks, self.fault,
+                        self.config['backend']['local_optimizer'])
 
 
 class Worker:

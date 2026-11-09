@@ -10,7 +10,7 @@ flowchart LR
     TeleopAdapter --> Supervisor
     Navigator[Navigator 目标与路径进度] --> Supervisor
     Supervisor --> Request[唯一有效 MotionRequest]
-    Request --> Optimizer[LocalMotionOptimizer / DWAEngine]
+    Request --> Optimizer[LocalMotionOptimizer / DWAEngine / TimedElasticBand]
     Optimizer --> SafetyGuard
     SafetyGuard --> Native[模型原生命令]
     Native --> Simulator[Simulator / 底盘接口]
@@ -31,7 +31,7 @@ flowchart LR
 | `safety` | 独立复核最终指令的一周期执行及制动，不信任优化器的安全标记 |
 | `simulation` / `adapters` | 实体碰撞与执行、外部命令表示能力；不复制物理方程 |
 
-具体默认算法的构造集中在 `navigation/defaults.py`。`navigator.py` 只使用规划器和优化器协议；`observe()` 不运行 DWA。共享弧长跟踪位于 `navigation/tracking.py`，不依赖 Navigator。核心导入不打开窗口、启动线程或执行文件 I/O。
+具体默认算法的构造集中在 `navigation/defaults.py`。`navigator.py` 只使用规划器和优化器协议；`observe()` 不运行局部优化。共享弧长跟踪位于 `navigation/tracking.py`，不依赖 Navigator。核心导入不打开窗口、启动线程或执行文件 I/O。
 
 ## 推荐入口
 
@@ -63,7 +63,9 @@ runtime.set_mode(ControlMode.AUTO)  # 不重置速度、转角、加速度或历
 
 `Supervisor.step()` 返回 `MotionResult`；其 `command` 才是可执行指令。调用者可以用 `Navigator.navigation_output(observation, result)` 取得兼容导航视图。`Navigator.step(NavigationInput(...))` 仍是自动导航的便捷入口，也经过最终安全门。
 
-若需要替换算法，传 `Navigator(global_planner=..., local_optimizer=..., model=..., dynamics=...)`。全局规划器只需实现 `plan(start, goal, collision_world, bounds) -> PlanResult`，局部优化器实现 `optimize(observation, request) -> MotionResult`。`reset()` 为可选生命周期能力。共享模型、矩形和物理参数须一致；`NavigationConfig` 可独立控制前视和到达容差，默认从兼容的 DWA 配置取值。
+若需要替换算法，传 `Navigator(global_planner=..., local_optimizer=..., model=..., dynamics=...)`。全局规划器只需实现 `plan(start, goal, collision_world, bounds) -> PlanResult`，局部优化器实现 `optimize(observation, request) -> MotionResult`。`reset()` 为可选生命周期能力。共享模型、矩形和物理参数须一致；`NavigationConfig` 可独立控制前视和到达容差，默认从局部优化器配置取值。
+
+`controller=TEBConfig(...)` 在装配入口选择 `TimedElasticBand`。其稀疏位姿/时间求解位于 `control/teb`；导航策略、模型原生命令映射、有限力批量预测、矩形扫掠及最终安全门复用既有实现。导航只验证由 band 推导的少量参考，不调用 DWA 的采样搜索；手动辅助显式委托 DWA。优化 band 与可执行 plant 轨迹分开，详见 [TEB](../pyrobo/control/teb/README.md)。
 
 `NavigationConfig.goal_approach_distance` 可独立设置阿克曼终点沿目标朝向的直线入射长度（m）。`None` 沿用车型根据前视与转弯半径计算的默认值，正数显式指定长度，`0` 关闭该入射段；差速车型不添加入射段。显式长度仍通过相同的矩形扫掠碰撞检查，缩短长度不保证任意停车姿态可达。全局规划器 `clearance` 是额外规划间距，会叠加在 `Footprint.margin` 与点半径之外；窄道应分别配置这两种边距。
 

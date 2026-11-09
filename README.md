@@ -1,10 +1,11 @@
 # pyrobo
 
-面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → 模型空间 DWA → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
+面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → DWA / TEB 局部导航 → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
 
 - **矩形车体**：任意长宽、朝向和纵向参考点偏移；提供 0.5 × 0.5 m、1 × 0.5 m 两个版型。全局规划、局部预测、路径验证和实体仿真都检查矩形。
 - **RRT-Connect** 与 **Voronoi + D* Lite**：直接在点云上生成有序航点，不默认栅格化或降采样。
 - **差速 / 阿克曼**：差速可原地旋转；阿克曼的偏航由车速和实际转角决定，支持倒车。
+- **TEB 局部导航**：稀疏优化位姿与时间，复用上一周期轨迹，接入相同矩形几何、车辆模型与有限力安全验证；DWA 仍为默认算法。
 - **共享动力学**：速度伺服产生驱动力和转向力矩，考虑摩擦、平方阻力、转向回中、执行器限幅和轮端摩擦预算。DWA 预测与手动执行使用同一个 NumPy 批量积分器。
 - **路径进度**：按弧长投影和前视插值，在抵达转角航点之前切换目标；保留完整路径，倒退时恢复历史段，交叉路段按进度连续性选取分支。
 
@@ -53,6 +54,8 @@ print(out.status, sim.collided)
 ```
 
 `Navigator()` 默认差速与 RRT-Connect。传 `model=Ackermann()` 时默认使用更长的预测时间、前视距离和 RRT 跟踪余量；显式传入的控制器、模型、动力学或规划配置按传入值使用。可以通过 `global_planner=` 和 `local_optimizer=` 注入其他算法；旧 `DynamicWindow.step(..., path=...)` 入口仍可使用。
+
+选择 TEB 可传 `controller=TEBConfig()`，或注入 `local_optimizer=TimedElasticBand(...)`（均从 `pyrobo` 导入）。阿克曼示例为 `Navigator(model=Ackermann(), footprint=Footprint.long(offset_x=.25), controller=TEBConfig(lookahead=1.6))`。Web「局部规划」和 Pygame `--local-optimizer teb` 支持切换；手动辅助继续使用 DWA。优化预算为软上限，实际输出仍经过完整动力学、矩形扫掠与制动验证。接口、参数、参考资料和范围见 [TEB 说明](pyrobo/control/teb/README.md)。
 
 **输出是模型指令**：差速返回 `WheelCommand(left, right, mode)`，轮速单位 m/s；阿克曼返回 `AckermannCommand(speed, steering, mode)`，单位 m/s、rad。`Twist2D` 表示实测车体速度；旧代码读取 `out.command.linear/angular` 需迁移为模型指令。发送速度话题可用 `model.from_twist(Twist2D(...))`；阿克曼会拒绝零线速度的非零偏航要求。
 

@@ -188,6 +188,18 @@
             >车宽 · m<input id="body-width" type="number" min="0.05" step="0.1"
           /></label>
         </div>
+        <label>局部规划<select id="local-optimizer">
+          <option value="dwa">DWA · 动态窗口</option>
+          <option value="teb">TEB · 时间弹性带</option>
+        </select></label>
+        <div id="teb-settings" hidden>
+          <div class="paired">
+            <label>TEB 最大节点<input id="teb-nodes" type="number" min="3" max="64" step="1" /></label>
+            <label>TEB 迭代上限<input id="teb-iterations" type="number" min="1" max="100" step="1" /></label>
+          </div>
+          <label>TEB 优化预算 · s<input id="teb-budget" type="number" min="0.001" max="1" step="0.01" placeholder="仅限制迭代" /></label>
+          <p class="help">联合优化路径与时间；预算为软上限。手动辅助沿用 DWA。</p>
+        </div>
         <details open>
           <summary>初始位姿与目标</summary>
           <div class="pose-row">
@@ -290,7 +302,7 @@
         <details>
           <summary>完整参数 JSON</summary>
           <p class="help">
-            包含 DWA、摩擦、回中、手柄映射等全部参数。修改后先更新草稿。
+            包含 DWA、TEB、摩擦、回中、手柄映射等全部参数。修改后先更新草稿。
           </p>
           <textarea
             id="advanced"

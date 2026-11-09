@@ -113,7 +113,7 @@ class View:
         pg.draw.rect(screen, PANEL, self.sidebar)
         self.text('PYROBO  /  MOTION LAB', (24, 19), TEXT, self.title)
         cfg = self.config['backend']
-        self.text(f"{cfg['planner'].upper()}   /   DWA   /   {cfg['model'].upper()}", (400, 25), MUTED, self.small)
+        self.text(f"{cfg['planner'].upper()}   /   {cfg['local_optimizer'].upper()}   /   {cfg['model'].upper()}", (400, 25), MUTED, self.small)
         b = self.world.bounds
         screen.set_clip(vp.rect)
         pg.draw.rect(screen, '#16212c', vp.rect)

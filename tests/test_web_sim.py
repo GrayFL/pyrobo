@@ -47,6 +47,72 @@ def test_scene_round_trip_freezes_parameters_and_retains_original_start(tmp_path
     assert run.world.polygons
 
 
+def test_teb_scene_roundtrip_and_web_diagnostics(tmp_path):
+    from pyrobo import TimedElasticBand
+    from pyrobo.apps.web_sim.server import snapshot_data
+    case = scene(model='ackermann', local_optimizer='teb')
+    assert case.config['teb']['lookahead'] == 1.6
+    store = SceneStore(tmp_path)
+    assert store.load(store.save(case)).model_dump() == case.model_dump()
+    session = SceneSession(case)
+    assert isinstance(session.nav.optimizer, TimedElasticBand)
+    payload = snapshot_data(session.tick(actions=[Action('mode', 'auto')]), 1)
+    assert payload['optimizer'] == 'teb'
+    assert payload['optimizer_diagnostics']['teb_nodes'] >= 5
+    assert payload['safe'] and payload['forecast'] and not payload['collided']
+    json.dumps(payload, allow_nan=False)
+    warmed = snapshot_data(session.tick(), 1)
+    assert warmed['optimizer_diagnostics']['teb_warm_started'] is True
+    json.dumps(warmed, allow_nan=False)
+    with TestClient(create_app(scenes_dir=tmp_path, initial_scene=case)) as client:
+        assert 'id="local-optimizer"' in client.get('/').text
+        assert 'teb_status' in client.get('/static/app.js').text
+        with client.websocket_connect('/ws') as ws:
+            hello = receive(ws, lambda data: data['type'] == 'hello')
+            assert hello['scene']['config']['backend']['local_optimizer'] == 'teb'
+            changed = deepcopy(hello['scene'])
+            changed['config']['teb']['max_samples'] = 12
+            ws.send_json({'type': 'apply', 'id': 1, 'scene': changed})
+            result = reply(ws, 1)
+            assert result['ok'] and result['scene']['config']['teb']['max_samples'] == 12
+
+
+@pytest.mark.parametrize('planner', ['rrt_connect', 'voronoi'])
+def test_teb_differential_narrow_road_arrives_through_all_corners(planner):
+    from dataclasses import replace
+
+    path = Path(__file__).parents[1]/'pyrobo/apps/scenes/teb_narrow_road.json'
+    payload = json.loads(path.read_text())
+    payload['config']['backend']['planner'] = planner
+    # Exercise the full optimization independently of machine load. The CLI
+    # and browser replays additionally cover the default soft time budget.
+    payload['config']['teb'] = {'time_budget': None}
+    session = SceneSession(Scene.model_validate(payload))
+    if planner == 'rrt_connect':
+        session.nav.planner.config = replace(session.nav.planner.config, time_budget=None)
+    session.apply(Action('mode', 'auto'))
+    for _ in range(650):
+        snapshot = session.tick()
+        assert snapshot.motion.safe and not snapshot.collided and not snapshot.fault
+        assert snapshot.motion.diagnostics.candidate_count <= 16
+        if snapshot.navigation_status == 'arrived':
+            break
+    assert snapshot.navigation_status == 'arrived'
+    assert max(abs(snapshot.state.velocity.linear), abs(snapshot.state.velocity.angular)) < 1e-3
+    # The route must go through the upper passage and return to the bottom goal.
+    assert np.max(snapshot.trail[:, 1]) > 6.
+    assert snapshot.state.pose.translation[1] < 1.
+
+
+@pytest.mark.parametrize('teb', [{'max_samples': 1000}, {'max_iterations': 1000},
+                              {'time_budget': 2.}, {'prediction_time': 1e6}, {'dt_min': .5}])
+def test_teb_interactive_workload_rejected(teb):
+    payload = scene(local_optimizer='teb').model_dump()
+    payload['config']['teb'].update(teb)
+    with pytest.raises(ValueError):
+        Scene.model_validate(payload)
+
+
 @pytest.mark.parametrize('edit', [
     {'schema_version': 2}, {'polygons': [[[0, 0], [1, 1], [0, 1], [1, 0]]]},
     {'polygons': [[[-2.5, -.5], [-1.5, -.5], [-1.5, .5], [-2.5, .5]]]},

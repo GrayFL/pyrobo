@@ -2,7 +2,7 @@
 # CLI selectors override this file; repeated --set overrides take final precedence.
 [backend]
 planner = "rrt_connect"          # rrt_connect | voronoi
-local_optimizer = "dwa"
+local_optimizer = "dwa"         # dwa | teb
 model = "differential"           # differential | ackermann
 
 [app]
@@ -64,6 +64,13 @@ angular_samples = 17
 time_budget = 0.5
 seed = 7
 # clearance inherits the model-aware default if omitted.
+
+[teb]
+max_samples = 16
+max_iterations = 12
+time_budget = 0.06              # soft optimization budget, excluding physical verification
+# dt_ref = 0.3                  # nominal interval; optimized together with poses
+# obstacle_clearance = 0.12     # preference beyond the unchanged body margin
 
 [voronoi]
 time_budget = 2.0

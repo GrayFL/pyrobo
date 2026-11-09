@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "TEB · 后轴偏移长车体绕墙",
+  "description": "阿克曼后轴参考点，1 × 0.5 m 车体、中心前移 0.2 m；保留 0.08 m 碰撞边距。",
+  "config": {
+    "backend": {"model": "ackermann", "planner": "rrt_connect", "local_optimizer": "teb"},
+    "footprint": {"length": 1.0, "width": 0.5, "margin": 0.08, "offset_x": 0.2},
+    "map": {
+      "preset": "custom",
+      "bounds": [-5, 5, -4, 4],
+      "start": [-3, -1, 0],
+      "goal": [3, 1, 0],
+      "boxes": [[0, 0.4, -4, 0.4]]
+    }
+  },
+  "polygons": [],
+  "polylines": []
+}

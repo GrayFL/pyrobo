@@ -12,7 +12,7 @@ from uuid import uuid4
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from pyrobo.apps.sim_common.config import (DEFAULTS, build_parameters, make_world, merge,
+from pyrobo.apps.sim_common.config import (DEFAULTS, build_parameters, controller_parameters, make_world, merge,
                                         parameters, validate)
 from pyrobo.apps.sim_common.session import Session
 from pyrobo import Ackermann, DifferentialDrive, NavigationConfig
@@ -81,7 +81,8 @@ class Scene(BaseModel):
         segments = world.segments()
         if np.ceil(np.linalg.norm(segments[:, 1]-segments[:, 0], axis=1)/spacing).sum() > 100_000:
             raise ValueError('map exceeds 100000 surface samples; increase point_spacing')
-        model, footprint, dynamics, dwa, planner, safety = build_parameters(config)
+        model, footprint, dynamics, controller, planner, safety = build_parameters(config)
+        dwa, teb = (controller_parameters(config, key) for key in ('dwa', 'teb'))
         if config['app']['dt'] < .02 or config['app']['trail_length'] > 10000:
             raise ValueError('web simulation needs dt >= 0.02 s and trail_length <= 10000')
         work = (dwa.linear_samples*dwa.angular_samples+64)*np.ceil(
@@ -89,6 +90,10 @@ class Scene(BaseModel):
         if (dwa.linear_samples*dwa.angular_samples > 5000 or work > 2_000_000 or
                 safety.braking_timeout/min(dynamics.substep, config['app']['dt']) > 10000):
             raise ValueError('prediction workload exceeds the interactive limit; reduce samples/horizon or increase integration steps')
+        teb_work = 16*np.ceil((teb.prediction_time+teb.braking_timeout)/min(dynamics.substep, teb.integration_dt))
+        if (teb.max_samples > 64 or teb.max_iterations > 100 or teb_work > 2_000_000 or
+                (teb.time_budget is not None and teb.time_budget > 1.)):
+            raise ValueError('TEB workload exceeds the interactive limit (64 nodes, 100 iterations, 1 s budget)')
         if planner.time_budget > 10 or planner.path_spacing < .01:
             raise ValueError('interactive planners require time_budget <= 10 s and path_spacing >= 0.01 m')
         if config['rrt_connect'].get('max_extensions', 1800) > 100000:
@@ -107,10 +112,10 @@ class Scene(BaseModel):
             config[key] = asdict(parameters(cls, config[key], key))
         config[config['backend']['model']] = asdict(model)
         config[config['backend']['planner']] = asdict(planner)
-        for key, value in [('footprint', footprint), ('dynamics', dynamics), ('dwa', dwa), ('safety', safety)]:
+        for key, value in [('footprint', footprint), ('dynamics', dynamics), ('dwa', dwa), ('teb', teb), ('safety', safety)]:
             config[key] = asdict(value)
         config['navigation'] = asdict(parameters(NavigationConfig, {
-            'lookahead': dwa.lookahead, 'goal_tolerance': dwa.goal_tolerance, 'yaw_tolerance': dwa.yaw_tolerance,
+            'lookahead': controller.lookahead, 'goal_tolerance': controller.goal_tolerance, 'yaw_tolerance': controller.yaw_tolerance,
             **config['navigation']}, 'navigation'))
         config['map'] = {'preset': 'custom', 'bounds': [b.xmin, b.xmax, b.ymin, b.ymax],
                          'start': planar_state(start).tolist(),

@@ -19,7 +19,7 @@ from rsim import Component, Runtime
 from rsim.devices import ChassisPortsDevice
 from rsim.transport.descriptor import TransportConfig
 
-from pyrobo import Footprint, pose2d
+from pyrobo import Footprint, TEBConfig, pose2d
 from pyrobo.rsim import NavigationInputs, NavigationCommandOutput, NavigationStack, StackConfig
 
 
@@ -176,6 +176,7 @@ def main(argv=None):
     parser.add_argument('--map', type=Path, help='JSON points/frame/revision/static/bounds map packet')
     parser.add_argument('--execution', choices=('local', 'thread', 'process'), default='thread')
     parser.add_argument('--scheduling', choices=('realtime', 'environment'), default='realtime')
+    parser.add_argument('--local-optimizer', choices=('dwa', 'teb'), default='dwa')
     parser.add_argument('--duration', type=float, default=15.)
     parser.add_argument('--strict-planar-pose', action='store_true', help='reject z/roll/pitch instead of projecting')
     parser.add_argument('--output', type=Path)
@@ -185,9 +186,12 @@ def main(argv=None):
     data = json.loads(args.map.read_text()) if args.map else room_map(args.bounds)
     data['points'] = np.asarray(data['points'], dtype=float)
     device = ChassisPortsDevice(key=args.key, clock=args.clock, transport=TransportConfig(domain_id=args.domain))
+    config = StackConfig(clock=args.clock, footprint=Footprint(.6, .6), command_speed_limit=.45,
+        command_yaw_limit=.75, scheduling=args.scheduling,
+        controller=TEBConfig() if args.local_optimizer == 'teb' else None)
     report = asyncio.run(navigate(device, map_data=data, goal=args.goal, execution=args.execution,
                                  duration=args.duration, planar_projection=not args.strict_planar_pose,
-                                 scheduling=args.scheduling))
+                                 scheduling=args.scheduling, config=config))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)+'\n')

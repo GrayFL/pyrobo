@@ -8,7 +8,7 @@ from .models.kinematics import Ackermann, DifferentialDrive
 from .models.dynamics import ChassisDynamics, Drag, DynamicsConfig, DynamicsResult
 from .navigation import NavigationConfig, NavigationInput, NavigationOutput, Navigator, PathProgress, PathTracker
 from .planning import RRTConnectConfig, VoronoiConfig, VoronoiPlanner
-from .control import DWAConfig, DWAEngine, DynamicWindow
+from .control import DWAConfig, DWAEngine, DynamicWindow, TEBConfig, TEBEngine, TimedElasticBand
 from .runtime import ControlMode, Supervisor
 from .safety import SafetyConfig, SafetyGuard
 from .teleop import TeleopAdapter
@@ -22,4 +22,4 @@ __all__ = ['Bounds2D', 'Footprint', 'Twist2D', 'pose2d', 'PointCloud', 'PointObs
            'CommandMode', 'Diagnostics', 'MotionPolicy', 'MotionRequest', 'MotionResult', 'MotionStatus',
            'NavigationStatus', 'Path', 'PlanResult', 'PlanStatus', 'RobotObservation', 'SafetyAction',
            'SafetyAssessment', 'Trajectory', 'NavigationConfig', 'ControlMode', 'Supervisor',
-           'SafetyConfig', 'SafetyGuard', 'TeleopAdapter']
+           'SafetyConfig', 'SafetyGuard', 'TeleopAdapter', 'TEBConfig', 'TEBEngine', 'TimedElasticBand']

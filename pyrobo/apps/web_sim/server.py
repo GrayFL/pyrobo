@@ -56,6 +56,9 @@ def snapshot_data(snapshot, generation):
         'clearance': m.diagnostics.clearance_m if m else None,
         'candidates': m.diagnostics.candidate_count if m else 0,
         'feasible': m.diagnostics.feasible_count if m else 0,
+        'optimizer': m.diagnostics.extra.get('optimizer', snapshot.local_optimizer) if m else snapshot.local_optimizer,
+        'optimizer_diagnostics': {key: value for key, value in m.diagnostics.extra.items()
+                                  if key.startswith('teb_')} if m else {},
         'elapsed_ms': snapshot.elapsed_ms, 'collided': snapshot.collided,
         'notice': snapshot.notice, 'fault': snapshot.fault,
     })

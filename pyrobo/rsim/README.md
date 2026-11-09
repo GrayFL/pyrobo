@@ -1,5 +1,14 @@
 # Optional RSim navigation and devices
 
+Local navigation supports `StackConfig(controller=TEBConfig(...))` alongside
+the default DWA. Import `TEBConfig` from `pyrobo`. Both use the same native
+commands, measured chassis state, command limits, leases and final safety gate;
+provider and graphmap contracts are unchanged. Controlled TEB requires
+`time_budget=None` for reproducible iteration-bounded optimization.
+Try `python -m pyrobo.apps.lockstep_navigation --local-optimizer teb --execution process`;
+the common provider consumer also accepts `--local-optimizer teb`.
+See [TEB](../control/teb/README.md) for scope and configuration.
+
 `pyrobo.rsim` contains runtime wrappers; pure `import pyrobo`, geometry, planning,
 control and `pyrobo.simulation` do not import RSim. Use the real local RSim and
 graphmap repositories. The optional `rsim` extra requires Python compatible with

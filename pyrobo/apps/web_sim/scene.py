@@ -1,6 +1,6 @@
 """Versioned, portable scenarios and atomic server-side case storage."""
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -17,7 +17,10 @@ from pyrobo.apps.sim_common.config import (DEFAULTS, build_parameters, controlle
 from pyrobo.apps.sim_common.session import Session
 from pyrobo import Ackermann, DifferentialDrive, NavigationConfig
 from pyrobo.core.geometry import planar_state
+from pyrobo.core import PointCloud, Twist2D
+from pyrobo.simulation import Box, World2D
 from .world import PolygonWorld
+from .experiment import Experiment, InitialRoutePlanner
 
 MAX_SCENE_BYTES = 2_000_000
 
@@ -53,6 +56,7 @@ class Scene(BaseModel):
     config: dict = Field(default_factory=dict)
     polygons: list[list[tuple[float, float]]] = Field(default_factory=list, max_length=256)
     polylines: list[Polyline] = Field(default_factory=list, max_length=256)
+    experiment: Experiment | None = None
 
     @model_validator(mode='after')
     def normalize(self):
@@ -82,7 +86,7 @@ class Scene(BaseModel):
         if np.ceil(np.linalg.norm(segments[:, 1]-segments[:, 0], axis=1)/spacing).sum() > 100_000:
             raise ValueError('map exceeds 100000 surface samples; increase point_spacing')
         model, footprint, dynamics, controller, planner, safety = build_parameters(config)
-        dwa, teb = (controller_parameters(config, key) for key in ('dwa', 'teb'))
+        dwa, teb, eb = (controller_parameters(config, key) for key in ('dwa', 'teb', 'eb_dwa'))
         if config['app']['dt'] < .02 or config['app']['trail_length'] > 10000:
             raise ValueError('web simulation needs dt >= 0.02 s and trail_length <= 10000')
         work = (dwa.linear_samples*dwa.angular_samples+64)*np.ceil(
@@ -94,6 +98,13 @@ class Scene(BaseModel):
         if (teb.max_samples > 64 or teb.max_iterations > 100 or teb_work > 2_000_000 or
                 (teb.time_budget is not None and teb.time_budget > 1.)):
             raise ValueError('TEB workload exceeds the interactive limit (64 nodes, 100 iterations, 1 s budget)')
+        eb_work = (eb.linear_samples*eb.angular_samples+64)*np.ceil(
+            (eb.prediction_time+eb.braking_timeout)/min(dynamics.substep, eb.integration_dt))
+        if (eb.max_nodes > 128 or eb.max_iterations > 100 or eb.max_evaluations > 10000 or
+                eb.max_refinement_cycles > 32 or eb.max_validation_intervals > 32768 or
+                eb.linear_samples*eb.angular_samples > 5000 or eb_work > 2_000_000 or
+                (eb.time_budget_s is not None and eb.time_budget_s > 1.)):
+            raise ValueError('EB-DWA workload exceeds the interactive limit')
         if planner.time_budget > 10 or planner.path_spacing < .01:
             raise ValueError('interactive planners require time_budget <= 10 s and path_spacing >= 0.01 m')
         if config['rrt_connect'].get('max_extensions', 1800) > 100000:
@@ -103,6 +114,20 @@ class Scene(BaseModel):
         for label, pose in [('start', start), ('goal', goal)]:
             if pose is not None and world.collides(pose, footprint, padding=footprint.margin):
                 raise ValueError(f'map.{label} intersects solid geometry, including footprint margin')
+        if self.experiment is not None:
+            route = self.experiment.reference_path
+            if route is not None and (goal is None or not np.all(b.contains(route)) or
+                    not np.allclose(route[0], start.translation[:2], rtol=0, atol=1e-6) or
+                    not np.allclose(route[-1], goal.translation[:2], rtol=0, atol=1e-6)):
+                raise ValueError('experiment reference must join start to goal inside bounds')
+            state = self.experiment.initial_state
+            if isinstance(model, Ackermann) and not np.isclose(state.angular, model.yaw_rate(state.linear, state.steering)):
+                raise ValueError('initial Ackermann yaw rate must agree with speed and steering')
+            event_boxes = [Box(*box) for event in self.experiment.events for box in event.boxes]
+            if any(not np.all(b.contains(box.corners)) for box in event_boxes):
+                raise ValueError('event box lies outside bounds')
+            if sum(2*((box.xmax-box.xmin)+(box.ymax-box.ymin))/spacing+4 for box in event_boxes) + len(world.point_cloud(spacing).points) > 100000:
+                raise ValueError('experiment map exceeds 100000 surface samples')
         # Freeze effective defaults into the saved case, including inactive backends.
         for key in ('rrt_connect', 'voronoi'):
             alternate = deepcopy(config)
@@ -112,7 +137,7 @@ class Scene(BaseModel):
             config[key] = asdict(parameters(cls, config[key], key))
         config[config['backend']['model']] = asdict(model)
         config[config['backend']['planner']] = asdict(planner)
-        for key, value in [('footprint', footprint), ('dynamics', dynamics), ('dwa', dwa), ('teb', teb), ('safety', safety)]:
+        for key, value in [('footprint', footprint), ('dynamics', dynamics), ('dwa', dwa), ('teb', teb), ('eb_dwa', eb), ('safety', safety)]:
             config[key] = asdict(value)
         config['navigation'] = asdict(parameters(NavigationConfig, {
             'lookahead': controller.lookahead, 'goal_tolerance': controller.goal_tolerance, 'yaw_tolerance': controller.yaw_tolerance,
@@ -136,6 +161,16 @@ class SceneSession(Session):
             scene = Scene.model_validate(data)
         self.scene = scene
         super().__init__(deepcopy(scene.config))
+        self.event_index, self.event_log = 0, []
+        self.added_boxes = []
+        self.cloud_frozen = False
+        if scene.experiment is not None:
+            experiment = scene.experiment
+            if experiment.reference_path is not None:
+                self.nav.planner = InitialRoutePlanner(self.nav.planner, experiment.reference_path, self.nav.goal)
+            initial = experiment.initial_state.model_dump()
+            linear, angular = initial.pop('linear'), initial.pop('angular')
+            self.sim.state = replace(self.sim.state, velocity=Twist2D(linear, angular), **initial)
 
     def make_world(self, config):
         world, start, goal = make_world(config)
@@ -144,9 +179,42 @@ class SceneSession(Session):
     def apply(self, action):
         super().apply(action)
         if action.kind == 'goal' and self.nav.goal is not None:
+            experiment = self.scene.experiment
+            if experiment is not None and experiment.reference_path is not None and not np.allclose(
+                    experiment.reference_path[-1], self.nav.goal.translation[:2], rtol=0, atol=1e-6):
+                # A live goal edit starts an ordinary planning task. Reset must
+                # not resurrect an authored route to the former goal.
+                self.scene = self.scene.model_copy(update={'experiment': experiment.model_copy(update={'reference_path': None})})
             self.config['map']['goal'] = planar_state(self.nav.goal).tolist()
         elif action.kind == 'policy':
             self.config['teleop']['policy'] = str(self.policy)
+
+    def observation(self):
+        experiment = self.scene.experiment
+        events = () if experiment is None else experiment.events
+        now = self.sim.state.timestamp
+        while self.event_index < len(events) and events[self.event_index].time_s <= now+1e-9:
+            event = events[self.event_index]
+            if event.kind == 'add_boxes':
+                base = World2D(self.world.bounds, (*self.world.boxes, *(Box(*box) for box in event.boxes)), frame=self.world.frame)
+                self.world = PolygonWorld(base, self.scene.polygons, self.scene.polylines)
+                self.sim.world = self.world
+                self.added_boxes.extend(event.boxes)
+                if not self.cloud_frozen:
+                    self.cloud = self.world.point_cloud(self.config['app']['point_spacing'])
+            elif event.kind == 'freeze_cloud':
+                self.cloud = PointCloud(self.cloud.points, self.cloud.frame, now)
+                self.cloud_frozen = True
+            else:
+                self.cloud_frozen = False
+                self.cloud = self.world.point_cloud(self.config['app']['point_spacing'])
+            self.event_log.append({'kind': event.kind, 'scheduled_s': event.time_s, 'applied_s': now})
+            self.event_index += 1
+            self.notice = f'Experiment: {event.kind} at {now:.2f} s'
+        return super().observation()
+
+    def experiment_snapshot(self):
+        return {'events': list(self.event_log), 'added_boxes': list(self.added_boxes), 'cloud_frozen': self.cloud_frozen}
 
 
 class SceneStore:

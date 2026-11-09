@@ -2,5 +2,6 @@
 from .config import EBDWAConfig
 from .reference import EBReference
 from .band import EBPathRepairer, RepairResult
+from .controller import ElasticBandDWA
 
-__all__ = ['EBDWAConfig', 'EBReference', 'EBPathRepairer', 'RepairResult']
+__all__ = ['EBDWAConfig', 'EBReference', 'EBPathRepairer', 'RepairResult', 'ElasticBandDWA']

@@ -9,7 +9,7 @@ def parse_args(argv=None):
                                      description='Pygame robot workbench: WASD / gamepad / virtual stick / click-to-go.')
     parser.add_argument('--config', type=Path, help='TOML file; unspecified settings retain model-aware defaults')
     parser.add_argument('--planner', choices=('rrt_connect', 'voronoi'))
-    parser.add_argument('--local-optimizer', choices=('dwa', 'teb'))
+    parser.add_argument('--local-optimizer', choices=('dwa', 'teb', 'eb_dwa'))
     parser.add_argument('--model', choices=('differential', 'ackermann'))
     parser.add_argument('--map', dest='map_preset', choices=('detour', 'empty', 'custom'))
     parser.add_argument('--policy', choices=('teleop_stop', 'teleop_avoid'))

@@ -98,8 +98,14 @@ class NavigationInputs(Component):
         if self.progress.consume(frame) is None:
             return None
         metadata.update(observed_dt_s=self.progress.dt)
-        converted = await self.states.publish({'state': self.codec.pack(state), 'frame': data['frame'],
-                                   'episode': data['episode'], 'pose_kind': data['pose_kind']},
+        packet = {'state': self.codec.pack(state), 'frame': data['frame'],
+                  'episode': data['episode'], 'pose_kind': data['pose_kind']}
+        if data.get('executed_command') is not None:
+            feedback = data['executed_command']
+            command = self.config.model.decode_command(feedback['native'], mode=feedback['mode'])
+            packet['executed_command'] = {'native': self.config.model.encode_command(command).tolist(),
+                                          'mode': str(command.mode)}
+        converted = await self.states.publish(packet,
                                   stamp_ns=frame.stamp_ns, clock=frame.clock,
                                   received_ns=frame.received_ns, metadata=metadata)
         self.previous = frame.sequence

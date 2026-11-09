@@ -142,7 +142,8 @@ def trajectory_scores(reference, poses, speeds, times, config, *, desired_speed,
         'progress': -config.progress_weight*(projection.s[rows, end]-projection.s[:, 0]),
         'backward': config.backward_weight*np.sum(retreat, axis=1),
         'speed': config.speed_weight*integral((speeds-vref)**2, dt),
-        'endpoint': config.endpoint_weight*projection.endpoint_excess[rows, end]**2,
+        'endpoint': config.endpoint_weight*(projection.endpoint_excess[rows, end]**2 +
+            np.where(projection.s[rows, end] >= reference.s[-1]-1e-9, projection.lateral[rows, end]**2, 0.)),
         'control': np.zeros(count),
     }
     if previous_command is not None:

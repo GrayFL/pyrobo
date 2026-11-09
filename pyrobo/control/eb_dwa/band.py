@@ -139,7 +139,7 @@ class EBPathRepairer:
 
     def reset(self):
         self.tracker, self._cache_tracker = PathTracker(), PathTracker()
-        self._reference = self._key = self._cloud = self._time = self._position = None
+        self._reference = self._anchor_reference = self._key = self._cloud = self._time = self._position = None
         self._cache_diagnostics = {}
         self._pending_curve, self._pending_gear, self._pending_attempt = None, 1, 0
         self._refinement_cycle = 0
@@ -191,8 +191,13 @@ class EBPathRepairer:
                 info['eb_coverage_m'] = float(reference.s[-1])
                 info['eb_reference_curvature_max'] = float(np.max(abs(reference.curvature)))
                 self._reference, self._cloud = reference, observation.obstacles
-                self._cache_tracker.set_path(path_poses(reference.xy, observation.frame))
-                self._cache_tracker.update(observation.chassis.pose, 0.)
+                if status != 'cached':
+                    # Keep a stable optimized curve. Re-anchoring the already
+                    # re-anchored output each tick accumulates tracking error
+                    # into the route and can fold a perfectly valid bend.
+                    self._anchor_reference = reference
+                    self._cache_tracker.set_path(path_poses(reference.xy, observation.frame))
+                    self._cache_tracker.update(observation.chassis.pose, 0.)
                 self._cache_diagnostics = dict(info)
             else:
                 # A failed reference must never remain publicly available for use.
@@ -205,13 +210,26 @@ class EBPathRepairer:
             return finish(None, 'invalid_start')
 
         if cfg.warm_start and self._reference is not None and self._pending_curve is None and not force:
-            old = self._reference
+            old = self._anchor_reference
             cached_progress = self._cache_tracker.update(observation.chassis.pose, 0.)
             u = float(np.interp(cached_progress.distance, old.s, old.global_s))
             tail_available = old.s[-1]-cached_progress.distance
             reaches_goal = old.global_s[-1] >= self.tracker.cumulative[-1]-1e-7
             if tail_available >= desired_coverage-.8 or reaches_goal:
-                keep = old.curve.parameter > u+.1
+                # A short connection absorbs measured lateral tracking error;
+                # do not attach to a node only centimetres ahead of the car.
+                distance = np.linalg.norm(state[:2]-old.sample(cached_progress.distance)[0])
+                join = max(cfg.node_spacing_m, 2*distance)
+                if not self.space.can_spin:
+                    # A car cannot erase lateral/heading error in a tiny
+                    # connector. Reserve arc proportional to its turn radius;
+                    # the complete curve is still checked below.
+                    tangent = old.curve.evaluate(u, 1)
+                    heading_error = abs(float(wrap_angle(state[2]+(np.pi if old.gear < 0 else 0.)-
+                                                         np.arctan2(tangent[1], tangent[0]))))
+                    radius = self.model.minimum_turn_radius
+                    join = max(join, np.sqrt(6*distance*radius), 2*heading_error*radius)
+                keep = old.curve.parameter > min(u+join, old.curve.parameter[-1]-1e-8)
                 if np.any(keep):
                     parameter = np.r_[u, old.curve.parameter[keep]]
                     xy = np.vstack((state[:2], old.curve.xy[keep]))
@@ -225,7 +243,8 @@ class EBPathRepairer:
                         new_min = float(min(reference.tube_left))
                         previous_width = np.interp(reference.global_s, old.global_s, old.tube_left)
                         invaded = np.any(reference.tube_left < np.minimum(previous_width, cfg.preferred_clearance)-.02)
-                        if self._cloud is observation.obstacles or not invaded:
+                        distorted = np.max(abs(reference.curvature)) > max(cfg.preferred_curvature, 2*np.max(abs(old.curvature)))+.1
+                        if not distorted and (self._cloud is observation.obstacles or not invaded):
                             info.update(eb_cache_hit=True, eb_warm_started=True, eb_nodes=len(xy),
                                         eb_rejoin_s=self._cache_diagnostics.get('eb_rejoin_s'),
                                         eb_surface_clearance_m=new_min, eb_verified_clearance_m=validation.clearance_m)
@@ -244,6 +263,7 @@ class EBPathRepairer:
         max_k = np.inf if self.space.can_spin else 1/self.model.minimum_turn_radius
         inspected = inspect_route(scan_xy, scan_s, world, self.footprint, observation.bounds, cfg, gear=gear, max_curvature=max_k)
         end = min(scan_end, s0+desired_coverage)
+        soft_end = min(scan_end, end+cfg.active_padding_m)
         rejoin = None
         # Extend through every defect that enters the requested window, including
         # a second obstacle introduced by the first obstacle's required tail.
@@ -251,10 +271,17 @@ class EBPathRepairer:
             relevant = [(a, b) for a, b in inspected.active if a < end]
             if not relevant:
                 break
-            needed = max(b for _, b in relevant)
+            # Long low-clearance corridors are one connected soft defect.
+            # They must not drag the entire scan window into every solve.
+            # Hard conflicts below still extend through their complete rejoin.
+            needed = min(soft_end, max(b for _, b in relevant))
             hard = [(a, b) for a, b in inspected.conflicts if a < end]
             if hard:
-                rejoin = find_rejoin(inspected, max(b for _, b in hard)+cfg.node_spacing_m,
+                # Surface clouds do not label solid interiors. A long wall can
+                # appear as separate entry/exit conflicts with a clear centre.
+                # Once repair is needed, rejoin after the last conflict in the
+                # bounded scan; never accept that apparent interior as a tail.
+                rejoin = find_rejoin(inspected, max(b for _, b in inspected.conflicts)+cfg.node_spacing_m,
                                      world, self.footprint, observation.bounds, cfg, gear=gear, max_curvature=max_k)
                 if rejoin is None:
                     info['eb_conflict_count'] = len(hard)
@@ -272,6 +299,10 @@ class EBPathRepairer:
             cursor = min(end, cursor+(cfg.obstacle_node_spacing_m if active_here else cfg.node_spacing_m))
             nodes.append(cursor)
         parameter = np.unique(nodes)
+        # Repeated floating additions can put the last regular node only
+        # 1e-14 m before the explicit endpoint. Preserve the exact endpoint and
+        # remove numerical zero-length spans before forming cubic derivatives.
+        parameter = parameter[np.r_[np.diff(parameter) > 1e-8, True]]
         if len(parameter) > cfg.max_nodes:
             info['eb_required_nodes'] = len(parameter)
             return finish(None, 'node_budget')
@@ -290,8 +321,10 @@ class EBPathRepairer:
         body_heading = direction+(np.pi if gear < 0 else 0.)
         hard_body = replace(self.footprint, margin=self.footprint.margin+cfg.minimum_clearance)
         if not self.space.can_spin or not world.rotation_free(state[:2], state[2], body_heading, hard_body, observation.bounds):
+            needs_alignment = abs(float(wrap_angle(state[2]-body_heading))) > 1e-3
             direction = state[2]+(np.pi if gear < 0 else 0.)
-            active[1:-1] |= parameter[1:-1] < s0+cfg.active_padding_m
+            if needs_alignment:
+                active[1:-1] |= parameter[1:-1] < s0+cfg.active_padding_m
         terminal = float(np.arctan2(last_delta[1], last_delta[0]))
         info.update(eb_nodes=len(parameter), eb_active_nodes=int(active.sum()),
                     eb_conflict_count=int(sum(a < end for a, _ in inspected.conflicts)), eb_rejoin_s=rejoin,

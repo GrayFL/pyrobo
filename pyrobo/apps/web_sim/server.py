@@ -38,17 +38,24 @@ def clean(value):
         return [clean(item) for item in value]
     if isinstance(value, (float, np.floating)):
         return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.generic):
+        return value.item()
     return value
 
 
 def snapshot_data(snapshot, generation):
     s, m = snapshot.state, snapshot.motion
+    reference = snapshot.reference
     return clean({
         'type': 'state', 'generation': generation, 'ticks': snapshot.ticks, 'time': s.timestamp,
         'pose': planar_state(s.pose), 'speed': s.velocity.linear, 'omega': s.velocity.angular,
         'steering': s.steering, 'mode': str(snapshot.mode), 'policy': str(snapshot.policy),
         'goal': planar_state(snapshot.goal) if snapshot.goal is not None else None,
         'path': snapshot.path, 'trail': snapshot.trail,
+        'reference': ({'xy': reference.xy, 's': reference.s, 'yaw': reference.yaw, 'curvature': reference.curvature,
+                       'left': reference.tube_left, 'right': reference.tube_right, 'gear': reference.gear}
+                      if reference is not None else None),
+        'experiment': snapshot.experiment,
         'forecast': m.trajectory.poses.position[:, :2] if m and m.trajectory else [],
         'target': snapshot.progress.target.translation[:2] if snapshot.progress else None,
         'status': snapshot.navigation_status, 'planner_status': snapshot.planner_status,
@@ -58,7 +65,9 @@ def snapshot_data(snapshot, generation):
         'feasible': m.diagnostics.feasible_count if m else 0,
         'optimizer': m.diagnostics.extra.get('optimizer', snapshot.local_optimizer) if m else snapshot.local_optimizer,
         'optimizer_diagnostics': {key: value for key, value in m.diagnostics.extra.items()
-                                  if key.startswith('teb_')} if m else {},
+                                  if key.startswith(('teb_', 'eb_', 'dwa_')) or key == 'request_replan'} if m else {},
+        'cost_terms': m.diagnostics.cost_terms if m else {},
+        'reason': m.diagnostics.reason if m else '',
         'elapsed_ms': snapshot.elapsed_ms, 'collided': snapshot.collided,
         'notice': snapshot.notice, 'fault': snapshot.fault,
     })
@@ -137,6 +146,20 @@ def create_app(*, scenes_dir=None, initial_scene=None, max_clients=8):
     @app.get('/api/scenes')
     def list_scenes():
         return app.state.store.list()
+
+    examples = {path.stem: path for path in (Path(__file__).parents[1]/'scenes').glob('*.json')}
+
+    @app.get('/api/examples')
+    def list_examples():
+        return [dict(id=name, name=data['name'], description=data.get('description', ''), builtin=True)
+                for name, path in sorted(examples.items())
+                for data in [json.loads(path.read_text(encoding='utf-8'))]]
+
+    @app.get('/api/examples/{identifier}')
+    def load_example(identifier: str):
+        if identifier not in examples:
+            raise HTTPException(404, 'example not found')
+        return Scene.model_validate_json(examples[identifier].read_bytes()).model_dump()
 
     @app.get('/api/scenes/{identifier}')
     def load_scene(identifier: str):

@@ -93,8 +93,14 @@ class DWAEngine:
                                                        self.config.reject_lateral_violation, immediate_check=immediate_check)
         final = self.plant.codec.poses(prediction.states[:, prediction.prediction_end])
         policy = self.policies[request.policy]
+        score_rollout = getattr(policy, 'score_rollout', None)
         score = getattr(policy, 'score_batch', None)
-        if score is not None:
+        score_terms = None
+        if score_rollout is not None:
+            objective, policy_ok, score_terms = score_rollout(
+                context, search, prediction, self.config, self.command_space,
+                observation=observation, codec=self.plant.codec, world=world)
+        elif score is not None:
             objective, policy_ok = score(context, search, final, self.config, self.command_space)
         elif request.policy == MotionPolicy.NAVIGATION:
             terminal_clearance = (world.clearances(final, self.footprint, observation.bounds)
@@ -117,7 +123,8 @@ class DWAEngine:
         costs = objective + obstacle_cost
         costs[~feasible] = np.inf
         return MotionBatch(search, native, prediction, feasible, clearance, costs, masks,
-                           {'objective': objective, 'clearance': obstacle_cost})
+                           {**({'objective': objective} if score_terms is None else score_terms),
+                            'clearance': obstacle_cost})
 
     def optimize(self, observation, request, *, collision_world=None):
         started = perf_counter()

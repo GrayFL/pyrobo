@@ -4,6 +4,8 @@
 
 ## 启动
 
+EB-DWA 使用 `--local-optimizer eb_dwa` 和 TOML `[eb_dwa]` 配置；同一几何、完整状态及独立安全门用于预测与执行。可视化参考曲线、可编辑事件和内置验收场景在 [Web 测试台](../web_sim/README.md) 中提供。
+
 在仓库根目录运行；graphmap 的准备方式见[根 README](../../README.md)。pygame 是可选依赖，核心库不导入它。
 
 ```bash

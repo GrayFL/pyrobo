@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 
-from pyrobo import (ChassisDynamics, DWAConfig, DWAEngine, TEBConfig, TimedElasticBand, DifferentialDrive, Footprint, NavigationConfig,
+from pyrobo import (ChassisDynamics, DWAConfig, DWAEngine, TEBConfig, TimedElasticBand, EBDWAConfig, ElasticBandDWA, DifferentialDrive, Footprint, NavigationConfig,
                     SafetyConfig, SafetyGuard)
 from pyrobo.geometry.cache import SnapshotIndex
 from pyrobo.models.dynamics.config import DynamicsConfig
@@ -39,7 +39,7 @@ class StackConfig:
     model: object = field(default_factory=DifferentialDrive)
     footprint: Footprint = field(default_factory=Footprint)
     dynamics: DynamicsConfig = field(default_factory=DynamicsConfig)
-    controller: DWAConfig | TEBConfig | None = None
+    controller: DWAConfig | TEBConfig | EBDWAConfig | None = None
     planner: object = field(default_factory=lambda: RRTConnectConfig(time_budget=1., clearance=.08))
     navigation: NavigationConfig | None = None
     safety: SafetyConfig = field(default_factory=SafetyConfig)
@@ -83,10 +83,12 @@ class StackConfig:
             car = not command_space_for(self.model).can_spin
             object.__setattr__(self, 'controller', DWAConfig(prediction_time=2.4 if car else 1.8,
                                                             lookahead=1.6 if car else 1.3))
-        if not isinstance(self.controller, (DWAConfig, TEBConfig)):
-            raise TypeError('controller must be DWAConfig or TEBConfig')
+        if not isinstance(self.controller, (DWAConfig, TEBConfig, EBDWAConfig)):
+            raise TypeError('controller must be DWAConfig, TEBConfig or EBDWAConfig')
         if self.scheduling == 'lockstep' and isinstance(self.controller, TEBConfig) and self.controller.time_budget is not None:
             raise ValueError('lockstep TEB requires time_budget=None for a deterministic iteration budget')
+        if self.scheduling == 'lockstep' and isinstance(self.controller, EBDWAConfig) and self.controller.time_budget_s is not None:
+            raise ValueError('lockstep EB-DWA requires time_budget_s=None for deterministic work budgets')
         if self.navigation is None:
             object.__setattr__(self, 'navigation', NavigationConfig(lookahead=self.controller.lookahead,
                 goal_tolerance=self.controller.goal_tolerance, yaw_tolerance=self.controller.yaw_tolerance))
@@ -123,6 +125,8 @@ class StackConfig:
                 'planner_type': f'{type(self.planner).__module__}.{type(self.planner).__qualname__}'}
         if isinstance(self.controller, TEBConfig):
             data['controller_type'] = 'pyrobo.control.teb.TEBConfig'
+        elif isinstance(self.controller, EBDWAConfig):
+            data['controller_type'] = 'pyrobo.control.eb_dwa.EBDWAConfig'
         return hashlib.sha256(json.dumps(data, sort_keys=True, allow_nan=False,
                                         separators=(',', ':')).encode()).hexdigest()
 
@@ -131,7 +135,8 @@ class StackConfig:
         space = command_space_for(self.model)
         if self.command_speed_limit is not None or self.command_yaw_limit is not None:
             space = LimitedCommandSpace(space, self.command_speed_limit, self.command_yaw_limit)
-        factory = TimedElasticBand if isinstance(self.controller, TEBConfig) else DWAEngine
+        factory = (ElasticBandDWA if isinstance(self.controller, EBDWAConfig) else
+                   TimedElasticBand if isinstance(self.controller, TEBConfig) else DWAEngine)
         optimizer = factory(self.controller, self.footprint, model=self.model, dynamics=plant,
                               command_space=space, index=index, input_limits=self.safety)
         guard = SafetyGuard(plant, optimizer.command_space, self.footprint, index=index, config=self.safety)

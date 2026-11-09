@@ -57,6 +57,8 @@ print(out.status, sim.collided)
 
 选择 TEB 可传 `controller=TEBConfig()`，或注入 `local_optimizer=TimedElasticBand(...)`（均从 `pyrobo` 导入）。阿克曼示例为 `Navigator(model=Ackermann(), footprint=Footprint.long(offset_x=.25), controller=TEBConfig(lookahead=1.6))`。Web「局部规划」和 Pygame `--local-optimizer teb` 支持切换；手动辅助继续使用 DWA。优化预算为软上限，实际输出仍经过完整动力学、矩形扫掠与制动验证。接口、参数、参考资料和范围见 [TEB 说明](pyrobo/control/teb/README.md)。
 
+`controller=EBDWAConfig()` 或 `local_optimizer=ElasticBandDWA(...)` 选择 EB-DWA：先修复和平滑全局路径的局部几何，再用现有 DWA 按完整物理轨迹的空间进度评分。Web、Pygame 和 RSim 入口均接受 `eb_dwa`，默认仍为 DWA。Web 场景库提供 20 个可重放的几何、运动与故障实验，显示独立的 EB 参考曲线和软走廊。接口、实际执行反馈及当前验收进度见 [EB-DWA 说明](pyrobo/control/eb_dwa/README.md)。
+
 **输出是模型指令**：差速返回 `WheelCommand(left, right, mode)`，轮速单位 m/s；阿克曼返回 `AckermannCommand(speed, steering, mode)`，单位 m/s、rad。`Twist2D` 表示实测车体速度；旧代码读取 `out.command.linear/angular` 需迁移为模型指令。发送速度话题可用 `model.from_twist(Twist2D(...))`；阿克曼会拒绝零线速度的非零偏航要求。
 
 `ChassisState` 携带实际位姿、速度、转角、转角速度和上一步加速度。每次都传实际状态，使 DWA 预测与执行一致；阿克曼必须提供它，停车时也不能从 Twist 推断转角。差速省略时兼容只提供 Twist 的调用，假定未提供的加速度为零。手动与自主模式切换时继续使用同一个状态，不清零速度或转角。

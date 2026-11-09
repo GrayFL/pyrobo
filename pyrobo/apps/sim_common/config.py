@@ -6,7 +6,7 @@ import tomllib
 
 import numpy as np
 
-from pyrobo import (Ackermann, DifferentialDrive, DWAConfig, TEBConfig, DynamicsConfig, Drag, Footprint,
+from pyrobo import (Ackermann, DifferentialDrive, DWAConfig, TEBConfig, EBDWAConfig, DynamicsConfig, Drag, Footprint,
                     NavigationConfig, RRTConnectConfig, SafetyConfig, VoronoiConfig)
 from pyrobo.core import Bounds2D, pose2d
 from pyrobo.simulation import Box, World2D, demo_world
@@ -18,7 +18,7 @@ DEFAULTS = {
                 'adaptive_clearance': True},
     'map': {'preset': 'detour'},
     'footprint': {}, 'differential': {}, 'ackermann': {}, 'dynamics': {},
-    'dwa': {}, 'teb': {}, 'rrt_connect': {}, 'voronoi': {}, 'navigation': {}, 'safety': {},
+    'dwa': {}, 'teb': {}, 'eb_dwa': {}, 'rrt_connect': {}, 'voronoi': {}, 'navigation': {}, 'safety': {},
     'teleop': {'policy': 'teleop_stop', 'speed_limit': .6, 'turn_limit': 0., 'ttl': .3,
                'max_turn_deviation': .8, 'max_lateral_deviation': .8, 'max_heading_deviation': 1.2},
     'joystick': {'enabled': True, 'device_index': 0, 'throttle_axis': 1, 'turn_axis': 0,
@@ -91,8 +91,10 @@ def make_world(config):
 
 def controller_parameters(config, name=None):
     name = name or config['backend']['local_optimizer']
-    defaults = {} if config['backend']['model'] == 'differential' else {'prediction_time': 2.4, 'lookahead': 1.6}
-    return parameters(TEBConfig if name == 'teb' else DWAConfig, {**defaults, **config[name]}, name)
+    lookahead = 'track_lookahead_m' if name == 'eb_dwa' else 'lookahead'
+    defaults = {} if config['backend']['model'] == 'differential' else {'prediction_time': 2.4, lookahead: 1.6}
+    cls = {'dwa': DWAConfig, 'teb': TEBConfig, 'eb_dwa': EBDWAConfig}[name]
+    return parameters(cls, {**defaults, **config[name]}, name)
 
 
 def build_parameters(config):
@@ -125,7 +127,7 @@ def validate(config):
     if not isinstance(backend['adaptive_clearance'], bool):
         raise ValueError('backend.adaptive_clearance must be boolean')
     for key, choices in (('model', ('differential', 'ackermann')), ('planner', ('rrt_connect', 'voronoi')),
-                         ('local_optimizer', ('dwa', 'teb'))):
+                         ('local_optimizer', ('dwa', 'teb', 'eb_dwa'))):
         if backend[key] not in choices:
             raise ValueError(f'backend.{key} must be one of {choices}')
     for key, minimum in (('width', 1000), ('height', 720), ('fps', 1), ('trail_length', 2)):
@@ -154,7 +156,7 @@ def validate(config):
                      (RRTConnectConfig, 'rrt_connect'), (VoronoiConfig, 'voronoi'),
                      (NavigationConfig, 'navigation')):
         parameters(cls, config[key], key)
-    for name in ('dwa', 'teb'):
+    for name in ('dwa', 'teb', 'eb_dwa'):
         controller_parameters(config, name)
     model, footprint, dynamics, controller, planner, safety = build_parameters(config)
     dt = app['dt']

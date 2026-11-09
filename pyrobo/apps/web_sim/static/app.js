@@ -68,6 +68,13 @@ function sync(fit = false) {
   $("teb-nodes").value = c.teb?.max_samples ?? 16;
   $("teb-iterations").value = c.teb?.max_iterations ?? 12;
   $("teb-budget").value = c.teb?.time_budget ?? "";
+  $("eb-settings").hidden = c.backend.local_optimizer !== "eb_dwa";
+  $("eb-clearance").value = c.eb_dwa?.preferred_clearance ?? .16;
+  $("eb-lookahead").value = c.eb_dwa?.track_lookahead_m ?? 1.3;
+  $("eb-nodes").value = c.eb_dwa?.max_nodes ?? 96;
+  $("eb-iterations").value = c.eb_dwa?.max_iterations ?? 24;
+  $("eb-budget").value = c.eb_dwa?.time_budget_s ?? "";
+  $("experiment").value = draft.experiment ? JSON.stringify(draft.experiment, null, 2) : "";
   $("body-length").value = c.footprint.length;
   $("body-width").value = c.footprint.width;
   for (const name of ["start", "goal"]) {
@@ -202,6 +209,11 @@ function connect() {
       const teb = data.optimizer_diagnostics;
       if (teb?.teb_status)
         $("diagnostics").textContent += `\nTEB ${teb.teb_status} · ${teb.teb_nodes} 节点 · ${teb.teb_evaluations} 次计算\n代价 ${teb.teb_cost.toFixed(2)} · ${teb.teb_warm_started ? "复用上次轨迹" : "新轨迹"}`;
+      if (teb?.eb_status)
+        $("diagnostics").textContent += `\nEB ${teb.eb_status} · ${teb.eb_active_nodes}/${teb.eb_nodes} 活动节点\nEB ${(teb.eb_duration_s * 1000).toFixed(1)} ms · DWA ${((teb.dwa_duration_s || 0) * 1000).toFixed(1)} ms\n${teb.eb_cache_hit ? "复用曲线" : "修复参考"} · ${teb.eb_coverage_m.toFixed(2)} m · ${teb.eb_evaluations} 次计算${teb.request_replan ? " · 请求全局重规划" : ""}`;
+      if (data.reason) $("diagnostics").textContent += `\n${data.reason}`;
+      if (data.experiment?.events?.length)
+        $("diagnostics").textContent += `\n实验事件 ${data.experiment.events.length}${data.experiment.cloud_frozen ? " · 点云已冻结" : ""}`;
       const planningHint = {
         invalid_goal_approach:
           "目标直线入射段与障碍相交，可检查目标朝向或缩短「目标入射距离」。",
@@ -586,6 +598,10 @@ const setters = {
   horizon: (c, v) => (c[c.backend.local_optimizer].prediction_time = v),
   "teb-nodes": (c, v) => (c.teb.max_samples = v),
   "teb-iterations": (c, v) => (c.teb.max_iterations = v),
+  "eb-nodes": (c, v) => (c.eb_dwa.max_nodes = v),
+  "eb-iterations": (c, v) => (c.eb_dwa.max_iterations = v),
+  "eb-clearance": (c, v) => (c.eb_dwa.preferred_clearance = v),
+  "eb-lookahead": (c, v) => (c.eb_dwa.track_lookahead_m = v),
   budget: (c, v) => (c[c.backend.planner].time_budget = v),
   "planner-clearance": (c, v) => (c[c.backend.planner].clearance = v),
   mass: (c, v) => (c.dynamics.mass = v),
@@ -619,6 +635,19 @@ $("teb-budget").onchange = () => {
     change((s) => (s.config.teb.time_budget = value));
   } catch (error) { message(error.message, true); sync(); }
 };
+$("eb-budget").onchange = () => {
+  try {
+    const value = $("eb-budget").value.trim() ? number("eb-budget") : null;
+    change((s) => (s.config.eb_dwa.time_budget_s = value));
+  } catch (e) { message(e.message, true); }
+};
+$("apply-experiment").onclick = () => {
+  try {
+    const value = $("experiment").value.trim();
+    const experiment = value ? JSON.parse(value) : null;
+    change((s) => (s.experiment = experiment));
+  } catch (e) { message(e.message, true); }
+};
 $("model").onchange = () => {
   const model = $("model").value;
   change((s) => {
@@ -628,6 +657,7 @@ $("model").onchange = () => {
     c.dwa.prediction_time = car ? 2.4 : 1.8;
     c.dwa.lookahead = c.navigation.lookahead = car ? 1.6 : 1.3;
     c.teb.lookahead = car ? 1.6 : 1.3;
+    c.eb_dwa.track_lookahead_m = car ? 1.6 : 1.3;
     const clearance =
       0.12 +
       (car
@@ -766,6 +796,7 @@ $("new-scene").onclick = () => {
       s.description = "";
       s.polygons = [];
       s.polylines = [];
+      s.experiment = null;
       s.config.map = {
         preset: "custom",
         bounds: [-5, 5, -4, 4],
@@ -780,9 +811,9 @@ $("new-scene").onclick = () => {
 };
 $("library-open").onclick = async () => {
   try {
-    const response = await fetch("/api/scenes");
-    if (!response.ok) throw Error("场景库加载失败");
-    const scenes = await response.json();
+    const responses = await Promise.all([fetch("/api/scenes"), fetch("/api/examples")]);
+    if (responses.some((r) => !r.ok)) throw Error("场景库加载失败");
+    const scenes = (await Promise.all(responses.map((r) => r.json()))).flat();
     $("scene-list").replaceChildren();
     if (!scenes.length) $("scene-list").textContent = "还没有保存的场景。";
     for (const s of scenes) {
@@ -793,11 +824,11 @@ $("library-open").onclick = async () => {
         button = document.createElement("button");
       row.className = "scene-item";
       title.textContent = s.name;
-      detail.textContent = `${new Date(s.modified * 1000).toLocaleString()} · ${s.description || "无说明"}`;
+      detail.textContent = `${s.builtin ? "内置回归场景" : new Date(s.modified * 1000).toLocaleString()} · ${s.description || "无说明"}`;
       button.textContent = "加载";
       button.onclick = async () => {
         try {
-          const r = await fetch(`/api/scenes/${s.id}`);
+          const r = await fetch(`/api/${s.builtin ? "examples" : "scenes"}/${s.id}`);
           if (!r.ok) throw Error("场景读取失败");
           await loadScene(await r.json());
           $("library").close();

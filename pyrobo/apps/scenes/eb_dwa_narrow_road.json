@@ -6,7 +6,7 @@
     "backend": {
       "model": "differential",
       "planner": "rrt_connect",
-      "local_optimizer": "teb",
+      "local_optimizer": "eb_dwa",
       "adaptive_clearance": false
     },
     "app": {

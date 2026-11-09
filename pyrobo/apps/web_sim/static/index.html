@@ -113,6 +113,7 @@
         </div>
         <div class="legend">
           <span><i class="route"></i>全局路径</span
+          ><span><i style="background: #9670c7"></i>EB 参考</span
           ><span><i class="forecast"></i>局部预测</span
           ><span><i class="trail"></i>行驶轨迹</span
           ><span id="coordinates">X — / Y —</span>
@@ -191,6 +192,7 @@
         <label>局部规划<select id="local-optimizer">
           <option value="dwa">DWA · 动态窗口</option>
           <option value="teb">TEB · 时间弹性带</option>
+          <option value="eb_dwa">EB-DWA · 几何修复与动态窗口</option>
         </select></label>
         <div id="teb-settings" hidden>
           <div class="paired">
@@ -200,6 +202,24 @@
           <label>TEB 优化预算 · s<input id="teb-budget" type="number" min="0.001" max="1" step="0.01" placeholder="仅限制迭代" /></label>
           <p class="help">联合优化路径与时间；预算为软上限。手动辅助沿用 DWA。</p>
         </div>
+        <div id="eb-settings" hidden>
+          <div class="paired">
+            <label>期望净空 · m<input id="eb-clearance" type="number" min="0" step="0.02" /></label>
+            <label>跟踪前视 · m<input id="eb-lookahead" type="number" min="0.1" step="0.1" /></label>
+          </div>
+          <div class="paired">
+            <label>EB 最大节点<input id="eb-nodes" type="number" min="4" max="128" step="1" /></label>
+            <label>EB 迭代上限<input id="eb-iterations" type="number" min="1" max="100" step="1" /></label>
+          </div>
+          <label>EB 优化预算 · s<input id="eb-budget" type="number" min="0.001" max="1" step="0.01" placeholder="仅限制计算次数" /></label>
+          <p class="help">紫线为修复参考，淡紫区域为软跟踪走廊，绿色为实际动力学预测。期望净空可在窄路降低，车辆碰撞边界始终保留。</p>
+        </div>
+        <details>
+          <summary>可重复实验</summary>
+          <p class="help">场景库内置弯道、窄路、倒车及故障测试。此处保存固定参考路径、初始速度和按仿真时间触发的事件；清空为普通交互场景。</p>
+          <label>实验 JSON<textarea id="experiment" rows="8" spellcheck="false"></textarea></label>
+          <button id="apply-experiment">更新实验设置</button>
+        </details>
         <details open>
           <summary>初始位姿与目标</summary>
           <div class="pose-row">

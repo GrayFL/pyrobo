@@ -2,6 +2,17 @@
 
 FastAPI + Uvicorn 提供页面、场景库和 WebSocket；浏览器用 Canvas 绘图，不需要 Node 构建、CDN 或 pygame。每个浏览器窗口独立运行一辆车，局域网设备共享保存的场景库。
 
+「局部规划」支持 DWA、TEB、EB-DWA。EB-DWA 显示紫色几何参考及淡紫色软跟踪走廊，绿色仍为共享有限力模型的实际候选预测；软走廊不代替矩形碰撞检查。可调期望净空、跟踪前视、节点/迭代/软时间预算，完整参数保存在 `config.eb_dwa`。详细诊断包含几何失败原因、复用情况、活动节点及 EB/DWA 分项耗时。
+
+场景库同时列出用户保存的场景与随包发布的内置案例。20 个 `eb_dwa_*.json` 通过同一个 `SceneSession` 在网页和 CLI 中重放。「可重复实验」JSON 的可选 `experiment` 字段包含粗糙 `reference_path`、初始完整运动状态、按 `time_s` 排序的 `events`、预期结果和最大步数。事件仅支持 `add_boxes`、`freeze_cloud`、`resume_cloud`；新增障碍同时进入实体碰撞世界与观测，冻结点云时保持原采集时间。重置恢复初始世界与事件队列，保存和导出保留实验定义。
+
+固定参考只作为首次全局路线供局部算法处理，可以故意穿过障碍；失败后的重规划仍调用所选真实全局规划器。不能把实验参考当作无碰撞证书。编辑初始位置或目标时，应同步修改参考的首尾点或在实验设置中清除 `reference_path`。新建空白场景会清除实验设置。
+
+```bash
+python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/eb_dwa_corner.json --steps 300
+python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/eb_dwa_ackermann_reverse.json --steps 150
+```
+
 ## 启动与局域网访问
 
 在已配置 graphmap 的项目 Python 环境、仓库根目录执行：

@@ -19,7 +19,7 @@ from rsim import Component, Runtime
 from rsim.devices import ChassisPortsDevice
 from rsim.transport.descriptor import TransportConfig
 
-from pyrobo import Footprint, TEBConfig, pose2d
+from pyrobo import Footprint, TEBConfig, EBDWAConfig, pose2d
 from pyrobo.rsim import NavigationInputs, NavigationCommandOutput, NavigationStack, StackConfig
 
 
@@ -176,7 +176,7 @@ def main(argv=None):
     parser.add_argument('--map', type=Path, help='JSON points/frame/revision/static/bounds map packet')
     parser.add_argument('--execution', choices=('local', 'thread', 'process'), default='thread')
     parser.add_argument('--scheduling', choices=('realtime', 'environment'), default='realtime')
-    parser.add_argument('--local-optimizer', choices=('dwa', 'teb'), default='dwa')
+    parser.add_argument('--local-optimizer', choices=('dwa', 'teb', 'eb_dwa'), default='dwa')
     parser.add_argument('--duration', type=float, default=15.)
     parser.add_argument('--strict-planar-pose', action='store_true', help='reject z/roll/pitch instead of projecting')
     parser.add_argument('--output', type=Path)
@@ -188,7 +188,7 @@ def main(argv=None):
     device = ChassisPortsDevice(key=args.key, clock=args.clock, transport=TransportConfig(domain_id=args.domain))
     config = StackConfig(clock=args.clock, footprint=Footprint(.6, .6), command_speed_limit=.45,
         command_yaw_limit=.75, scheduling=args.scheduling,
-        controller=TEBConfig() if args.local_optimizer == 'teb' else None)
+        controller={'dwa': None, 'teb': TEBConfig(), 'eb_dwa': EBDWAConfig()}[args.local_optimizer])
     report = asyncio.run(navigate(device, map_data=data, goal=args.goal, execution=args.execution,
                                  duration=args.duration, planar_projection=not args.strict_planar_pose,
                                  scheduling=args.scheduling, config=config))

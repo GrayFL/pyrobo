@@ -406,6 +406,18 @@ export class Editor {
     if (this.state && !this.dirty) {
       this.path(this.state.trail, '#599fc9', 2);
       this.path(this.state.path, '#c69b3b', 2.5);
+      const ref = this.state.reference;
+      if (ref?.xy?.length) {
+        const side = (sign, width) => ref.xy.map((p, i) => [
+          p[0] - sign * Math.sin(ref.yaw[i]) * width[i],
+          p[1] + sign * Math.cos(ref.yaw[i]) * width[i],
+        ]);
+        const tube = [...side(1, ref.left), ...side(-1, ref.right).reverse()];
+        this.path(tube, '#9670c733', 1, '#9670c719');
+        this.path(ref.xy, '#9670c7', 2.5);
+      }
+      for (const [xmin, xmax, ymin, ymax] of this.state.experiment?.added_boxes || [])
+        this.path([[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], '#93594e', 1.5, '#b37f6f90');
       this.path(this.state.forecast, '#168d78', 2);
       if (this.state.target) {
         const q = this.pixel(this.state.target);

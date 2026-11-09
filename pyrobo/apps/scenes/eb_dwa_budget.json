@@ -5,7 +5,7 @@
   "config": {
     "backend": {
       "model": "differential",
-      "local_optimizer": "dwa",
+      "local_optimizer": "eb_dwa",
       "planner": "rrt_connect",
       "adaptive_clearance": false
     },
@@ -53,6 +53,9 @@
     },
     "navigation": {
       "goal_approach_distance": 0
+    },
+    "eb_dwa": {
+      "time_budget_s": 1e-12
     }
   },
   "polygons": [],
@@ -70,7 +73,6 @@
     ],
     "events": [],
     "expected": "stopped",
-    "max_steps": 800,
-    "eb_time_budget_s": 1e-12
+    "max_steps": 800
   }
 }

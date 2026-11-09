@@ -138,8 +138,9 @@ class Navigator:
         self.progress = self.tracker.update(o.chassis.pose, self.settings.lookahead) if len(self._path) else None
         at_position, at_heading = self._at_goal(o)
         if self.progress is not None and (not at_position or (not self.command_space.can_spin and not at_heading)):
-            if not self.index.get(o.obstacles).path_free(self.progress.remaining.position[:, :2], self.footprint,
-                                                        o.bounds, goal_yaw=planar_state(self.goal)[2]):
+            if (not getattr(self.optimizer, 'repairs_global_path', False) and
+                    not self.index.get(o.obstacles).path_free(self.progress.remaining.position[:, :2], self.footprint,
+                                                        o.bounds, goal_yaw=planar_state(self.goal)[2])):
                 self._path, self.progress, self._last_plan = np.empty((0, 2)), None, -np.inf
         return self.progress
 
@@ -213,6 +214,9 @@ class Navigator:
     def make_motion_request(self, observation: RobotObservation, *, goal=None):
         self.observe(observation, goal=goal)
         o, cfg = observation, self.settings
+        consume_replan = getattr(self.optimizer, 'consume_replan_request', None)
+        if consume_replan is not None and consume_replan():
+            self._path, self.progress, self._last_plan = np.empty((0, 2)), None, -np.inf
         at_position, at_heading = self._at_goal(o)
         current = planar_state(o.chassis.pose)
         if self._progress_position is None or np.linalg.norm(current[:2] - self._progress_position) > .15 or at_position:

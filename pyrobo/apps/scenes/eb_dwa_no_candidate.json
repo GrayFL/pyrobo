@@ -5,7 +5,7 @@
   "config": {
     "backend": {
       "model": "differential",
-      "local_optimizer": "dwa",
+      "local_optimizer": "eb_dwa",
       "planner": "rrt_connect",
       "adaptive_clearance": false
     },
@@ -53,6 +53,9 @@
     },
     "navigation": {
       "goal_approach_distance": 0
+    },
+    "dynamics": {
+      "linear_jerk": 0.01
     }
   },
   "polygons": [],
@@ -81,9 +84,6 @@
     "max_steps": 800,
     "initial_state": {
       "linear": 0.6
-    },
-    "dynamics_override": {
-      "linear_jerk": 0.01
     }
   }
 }

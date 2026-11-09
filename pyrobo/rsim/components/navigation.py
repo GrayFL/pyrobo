@@ -205,6 +205,14 @@ class LocalNavigation(Component):
                 self.bridge.accept(route.data)
         self.sequence += 1
         def compute():
+            # Only owner feedback tied to this measured source frame counts as
+            # execution. The proposal below may still be rejected downstream.
+            feedback = state_frame.data.get('executed_command')
+            record = getattr(self.navigator.optimizer, 'record_execution', None)
+            if record is not None:
+                command = (self.config.model.decode_command(feedback['native'], mode=feedback['mode'])
+                           if feedback is not None else None)
+                record(command, observation.timestamp)
             result = self.supervisor.step(observation)
             if self.delay_every and self.sequence % self.delay_every == 0:
                 sleep(self.delay_s)

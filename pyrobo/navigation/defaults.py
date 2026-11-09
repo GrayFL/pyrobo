@@ -4,7 +4,7 @@ from .config import NavigationConfig
 
 def components(*, footprint, planner, controller, model, dynamics, global_planner, local_optimizer,
                command_space, settings, index, max_cloud_age):
-    from ..control import DynamicWindow, TEBConfig, TimedElasticBand
+    from ..control import DynamicWindow, TEBConfig, TimedElasticBand, EBDWAConfig, ElasticBandDWA
     from ..safety import SafetyConfig
     from pyrobo.models.dynamics.chassis import ChassisDynamics
     from pyrobo.models.kinematics.differential import DifferentialDrive
@@ -22,7 +22,8 @@ def components(*, footprint, planner, controller, model, dynamics, global_planne
         raise ValueError('injected optimizer model and footprint must match navigation')
     space = command_space or getattr(local_optimizer, 'command_space', None) or command_space_for(model)
     if local_optimizer is None:
-        factory = TimedElasticBand if isinstance(controller, TEBConfig) else DynamicWindow
+        factory = (ElasticBandDWA if isinstance(controller, EBDWAConfig) else
+                   TimedElasticBand if isinstance(controller, TEBConfig) else DynamicWindow)
         local_optimizer = factory(controller, footprint, model=model, dynamics=dynamics,
                                         command_space=space, index=index,
                                         input_limits=SafetyConfig(max_cloud_age=max_cloud_age))

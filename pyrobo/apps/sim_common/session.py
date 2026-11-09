@@ -6,7 +6,7 @@ from time import monotonic, perf_counter
 
 import numpy as np
 
-from pyrobo import (ChassisDynamics, ControlMode, DWAEngine, TimedElasticBand, MotionPolicy, NavigationConfig,
+from pyrobo import (ChassisDynamics, ControlMode, DWAEngine, TimedElasticBand, ElasticBandDWA, MotionPolicy, NavigationConfig,
                     Navigator, RobotObservation, SafetyGuard, Supervisor, TeleopAdapter, Twist2D, pose2d)
 from pyrobo.core.geometry import planar_state
 from pyrobo.geometry.cache import SnapshotIndex
@@ -49,6 +49,8 @@ class Snapshot:
     ticks: int
     fault: str = ''
     local_optimizer: str = 'dwa'
+    reference: object = None
+    experiment: dict = field(default_factory=dict)
 
 
 def readonly(values):
@@ -65,8 +67,8 @@ class Session:
         self.model, self.footprint = model, footprint
         self.cloud = self.world.point_cloud(config['app']['point_spacing'])
         plant, index = ChassisDynamics(model, dynamics), SnapshotIndex()
-        factory = TimedElasticBand if config['backend']['local_optimizer'] == 'teb' else DWAEngine
-        options = {'teleop_config': controller_parameters(config, 'dwa')} if factory is TimedElasticBand else {}
+        factory = {'dwa': DWAEngine, 'teb': TimedElasticBand, 'eb_dwa': ElasticBandDWA}[config['backend']['local_optimizer']]
+        options = {'teleop_config': controller_parameters(config, 'dwa')} if factory is not DWAEngine else {}
         optimizer = factory(controller, footprint, model=model, dynamics=plant, index=index, input_limits=safety, **options)
         factory = RRTConnect if config['backend']['planner'] == 'rrt_connect' else VoronoiPlanner
         global_planner = (AdaptiveClearancePlanner(factory, planner, footprint) if config['backend']['adaptive_clearance']
@@ -164,7 +166,7 @@ class Session:
             angular, steering = (turn * turn_limit, None) if space.can_spin else (0., turn * turn_limit)
             self.runtime.submit_teleop(Twist2D(speed, angular), self.sim.state.timestamp,
                                       steering=steering, source=controls.source, policy=self.policy)
-        observation = RobotObservation(self.sim.state, self.cloud, self.world.bounds, self.config['app']['dt'])
+        observation = self.observation()
         motion = self.runtime.step(observation)
         # A result computed before an emergency, focus loss or new UI action must
         # not move the simulation on behalf of an obsolete input.
@@ -182,6 +184,9 @@ class Session:
         # Even an unverified stop is a finite-force braking attempt. Independent
         # solid collision truth terminates motion if braking cannot prevent impact.
         self.sim.step(motion.command, observation.dt)
+        feedback = getattr(self.nav.optimizer, 'record_execution', None)
+        if feedback is not None:
+            feedback(motion.command, self.sim.state.timestamp)
         self.ticks += 1
         self.trail.append(self.sim.state.pose.translation[:2].copy())
         if self.sim.collided:
@@ -190,11 +195,18 @@ class Session:
         self.elapsed_ms = (perf_counter()-started)*1000
         return self.snapshot()
 
+    def observation(self):
+        return RobotObservation(self.sim.state, self.cloud, self.world.bounds, self.config['app']['dt'])
+
     def snapshot(self):
         return Snapshot(self.sim.state, self.runtime.mode, self.policy, self.nav.goal, readonly(self.nav.path.xy),
                         readonly(self.trail), self.motion, self.nav.progress, str(self.nav.status), self.planner_status,
                         self.sim.collided, self.elapsed_ms, self.notice, self.ticks, self.fault,
-                        self.config['backend']['local_optimizer'])
+                        self.config['backend']['local_optimizer'], getattr(self.nav.optimizer, 'last_reference', None),
+                        self.experiment_snapshot())
+
+    def experiment_snapshot(self):
+        return {}
 
 
 class Worker:

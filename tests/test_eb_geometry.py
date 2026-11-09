@@ -64,6 +64,17 @@ def test_straight_reference_skips_optimization_and_reuses_verified_cache():
     assert not second.reference.xy.flags.writeable
 
 
+def test_regular_node_roundoff_cannot_create_tiny_terminal_curve_span():
+    world = World2D(Bounds2D(-2, 15, -3, 3))
+    o = RobotObservation(ChassisState(pose2d(0, 0)), world.point_cloud(), world.bounds)
+    cfg = EBDWAConfig(time_budget_s=None, node_spacing_m=.2, min_coverage_m=12.)
+    repairer = EBPathRepairer(cfg, model=Ackermann())
+    result = repairer.update(o, Route(path_poses([[0, 0], [12, 0]])))
+    assert result.success and not result.diagnostics['eb_optimized']
+    assert np.min(np.diff(result.reference.curve.parameter)) > .19
+    assert np.max(abs(result.reference.curvature)) < 1e-9
+
+
 @pytest.mark.parametrize('name', ['corner', 'obtuse', 'zigzag'])
 def test_empty_rough_path_is_actively_smoothed_into_a_continuous_tangent_curve(name):
     session, repairer, o, route = case(name)

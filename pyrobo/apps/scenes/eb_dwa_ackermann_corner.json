@@ -5,7 +5,7 @@
   "config": {
     "backend": {
       "model": "ackermann",
-      "local_optimizer": "dwa",
+      "local_optimizer": "eb_dwa",
       "planner": "rrt_connect",
       "adaptive_clearance": false
     },

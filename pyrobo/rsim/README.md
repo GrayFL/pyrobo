@@ -9,6 +9,14 @@ Try `python -m pyrobo.apps.lockstep_navigation --local-optimizer teb --execution
 the common provider consumer also accepts `--local-optimizer teb`.
 See [TEB](../control/teb/README.md) for scope and configuration.
 
+EB-DWA uses `StackConfig(controller=EBDWAConfig(...))` or `--local-optimizer eb_dwa`
+in both consumer CLIs. Controlled execution requires `time_budget_s=None`.
+The memory provider optionally publishes `executed_command={native, mode}` in
+the measured state frame, after physical execution. Navigation preserves that
+feedback and uses it for command smoothing. Providers without this field remain
+compatible; EB-DWA disables the smoothing term instead of assuming a proposal
+was executed. See [EB-DWA](../control/eb_dwa/README.md).
+
 `pyrobo.rsim` contains runtime wrappers; pure `import pyrobo`, geometry, planning,
 control and `pyrobo.simulation` do not import RSim. Use the real local RSim and
 graphmap repositories. The optional `rsim` extra requires Python compatible with

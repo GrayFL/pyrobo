@@ -104,6 +104,7 @@ class MemoryChassis(MemoryControl, Component):
         self.step_index = 0
         self._physical_substeps = 0
         self._state_known = True
+        self._executed_command = None
 
     async def _apply(self, envelope):
         if self.config.scheduling == 'controlled':
@@ -168,6 +169,7 @@ class MemoryChassis(MemoryControl, Component):
         if before_step is not None:
             before_step()
         self.simulation.step(command, self.config.dt)
+        self._executed_command = command
 
     async def _step(self):
         if self._paused or monotonic_ns() < self._physics_not_before_ns:
@@ -221,6 +223,9 @@ class MemoryChassis(MemoryControl, Component):
                   'pose_kind': 'ground_truth', 'collided': self.simulation.collided,
                   'source_rate': self.rate, 'scheduling': self.config.scheduling,
                   'physical_substeps': self._physical_substeps, 'phase': self._phase}
+        if self._executed_command is not None:
+            packet['executed_command'] = {'native': self.config.model.encode_command(self._executed_command).tolist(),
+                                          'mode': str(self._executed_command.mode)}
         if self.config.scheduling == 'accelerated':
             packet.update(command_accepted=self.command_accepted, command_expirations=self.command_expirations,
                           applied_command=[self.applied.linear_x, self.applied.angular_z],

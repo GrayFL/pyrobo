@@ -84,3 +84,27 @@ def test_command_from_previous_provider_session_is_rejected_at_same_episode():
             converted = (await output.commands.get()).data
             assert replace(converted, value=None) == replace(envelope, value=None)
     asyncio.run(run())
+
+
+def test_optional_execution_feedback_belongs_to_the_measured_source_frame():
+    async def run():
+        factory = MemoryChassisFactory()
+        source = ManualMemory(factory, factory.port_specs())
+        owner, config = Component(), StackConfig(clock=factory.clock)
+        inputs = ManualInputs(ChassisPortsDevice.from_component(source), owner.signal('maps', clock=config.clock),
+                              owner.signal('missions', clock=config.clock), config)
+        async with Runtime(inputs.states):
+            # No command has actually run on the initial publication.
+            initial = await source.state.get()
+            assert 'executed_command' not in initial.data
+            source._integrate('estop')
+            source.step_index += 1
+            source._physical_substeps += 1
+            await source._publish()
+            await inputs.convert()
+            feedback = (await inputs.states.get()).data['executed_command']
+            assert feedback == {'native': [0., 0.], 'mode': 'estop'}
+            source._create_world()
+            await source._publish()
+            assert 'executed_command' not in (await source.state.get()).data
+    asyncio.run(run())

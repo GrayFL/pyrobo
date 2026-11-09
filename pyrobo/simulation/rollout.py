@@ -103,6 +103,9 @@ def run_navigation(world: World2D, start: Pose, goal: Pose, *, navigator: Naviga
         if (output.status == "arrived" and override is None) or output.status == "emergency_stop" or k == max_steps - 1:
             break
         sim.step(command, dt)
+        feedback = getattr(nav.optimizer, 'record_execution', None)
+        if feedback is not None:
+            feedback(command, sim.state.timestamp)
         if sim.collided:
             break
     return SimulationRun(pose_array(np.array(states), world.frame, start.ego_frame), np.array(times),

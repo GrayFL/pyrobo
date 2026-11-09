@@ -11,7 +11,7 @@ from time import monotonic, monotonic_ns, process_time
 
 from rsim import Runtime
 from rsim.devices import ChassisPortsDevice
-from pyrobo import DWAConfig, TEBConfig, Footprint, pose2d
+from pyrobo import DWAConfig, TEBConfig, EBDWAConfig, Footprint, pose2d
 from pyrobo.planning import RRTConnectConfig
 from pyrobo.rsim import LockstepNavigation, MemoryChassisFactory, StackConfig
 from .navigation_provider import NavigationMission, room_map
@@ -30,9 +30,11 @@ def _peak_rss_bytes():
 
 def lockstep_config(*, clock='simulation', control_period=.1, local_optimizer='dwa'):
     """Explicit reproducible demo settings; general StackConfig defaults stay unchanged."""
-    if local_optimizer not in ('dwa', 'teb'):
-        raise ValueError('local_optimizer must be dwa or teb')
-    controller = (TEBConfig(prediction_time=.9, integration_dt=.1, max_iterations=8, time_budget=None)
+    if local_optimizer not in ('dwa', 'teb', 'eb_dwa'):
+        raise ValueError('local_optimizer must be dwa, teb or eb_dwa')
+    controller = (EBDWAConfig(prediction_time=.9, integration_dt=.1, time_budget_s=None, linear_samples=3, angular_samples=7)
+                  if local_optimizer == 'eb_dwa' else
+                  TEBConfig(prediction_time=.9, integration_dt=.1, max_iterations=8, time_budget=None)
                   if local_optimizer == 'teb' else
                   DWAConfig(prediction_time=.6, integration_dt=.1, linear_samples=3, angular_samples=3))
     return StackConfig(clock=clock, scheduling='lockstep', control_period=control_period,
@@ -130,7 +132,7 @@ def main(argv=None):
     parser.add_argument('--max-steps', type=int, default=250)
     parser.add_argument('--episodes', type=int, default=1)
     parser.add_argument('--execution', choices=('local', 'process'), default='local')
-    parser.add_argument('--local-optimizer', choices=('dwa', 'teb'), default='dwa')
+    parser.add_argument('--local-optimizer', choices=('dwa', 'teb', 'eb_dwa'), default='dwa')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
     module, name = args.factory.split(':', 1)

@@ -1,6 +1,25 @@
 # Elastic Band + Kinodynamic DWA
 
-实现依据与验收清单见 [设计文档](../../../docs/eb_dwa_design.md)，开发前结果见 [基线报告](../../../docs/eb_dwa_baseline.md)。目前独立几何与空间评分已实现；完整控制器和应用接入按后续阶段交付，不能把独立模块测试当作闭环导航成功。
+实现依据与验收清单见 [设计文档](../../../docs/eb_dwa_design.md)，开发前结果见 [基线报告](../../../docs/eb_dwa_baseline.md)。几何、空间评分、完整控制器和应用入口已接入；全场景重复验收和速度参考仍按后续阶段进行，不以单次到达宣称稳定性。
+
+## 控制器与装配
+
+```python
+from pyrobo import Ackermann, EBDWAConfig, ElasticBandDWA, Footprint, Navigator
+
+nav = Navigator(model=Ackermann(), footprint=Footprint.long(offset_x=.25),
+                controller=EBDWAConfig(prediction_time=2.4, track_lookahead_m=1.6))
+```
+
+`ElasticBandDWA.optimize` 实现 `LocalMotionOptimizer`。几何失败时只返回经过检查的制动；不会把未验证的参考交给采样器。DWA 的可选 `score_rollout` 插件读取共享批量预测，采样、有限力积分、完整持有及立即停止后的两项制动检查不变。最终 SafetyGuard 独立复核命令。手动意图委托既有 DWA，并保留共享点云索引。
+
+导航通过 `repairs_global_path` 和 `consume_replan_request()` 两个可选能力保留原全局路线供局部修复；失败时明确请求下一周期全局重规划。未实现这些能力的旧控制器行为不变。几何、动力学候选和最终执行分别给出诊断；`safe=True` 不是任务到达。
+
+自适应覆盖距离来自共享 plant 的代表性最高前/后速度预测和当前状态制动预测，另加覆盖余量；不是可达空间的严格外包络。缓存稳定的优化曲线，滚动输出只改当前接入段，避免把累计跟踪误差反复写回路径；阿克曼接入长度考虑最小转弯半径。普通低净空软缺陷不会强迫整个长走廊在每次求解中全部优化。
+
+调用方应在命令**实际执行之后**调用 `optimizer.record_execution(command, timestamp)`；下游覆盖后的真实命令才算反馈。传入 `None` 表示反馈缺失。Web/纯仿真自动回传实际执行命令；RSim 内存提供端在测量帧中附加 `executed_command={native, mode}`，消费端按同一源帧转送。无该可选字段的提供端（当前 MuJoCo）仍可运行，但不假设提案已执行，控制平滑项关闭，`eb_execution_feedback=False`。
+
+`reset()` 清除几何、进度、候选、执行反馈和覆盖估计缓存。锁步 RSim 要求 `time_budget_s=None`，使用节点、评估次数和迭代上限保证确定性工作预算。普通交互默认软预算为 0.06 s，准备与验证可能使实际耗时超出该值。
 
 ## 几何模块
 
@@ -28,7 +47,7 @@
 python -m pytest -q tests/test_eb_geometry.py tests/test_eb_scoring.py
 ```
 
-测试读取 `pyrobo/apps/scenes/eb_dwa_*.json` 中的相同世界和参考路线。当前阶段测试显式拆出 `experiment` 元数据；其 Web/CLI 执行支持将在应用接入阶段完成。已有 DWA/TEB、物理积分器、碰撞内核和导航默认行为均未修改。
+测试读取 `pyrobo/apps/scenes/eb_dwa_*.json` 中的相同世界和参考路线。几何测试独立调用修复器；`test_eb_controller.py` 通过正式 `SceneSession` 验证完整执行。当前 DWA 默认评分、TEB、物理积分器和碰撞内核未修改。
 
 ## 空间匹配评分
 

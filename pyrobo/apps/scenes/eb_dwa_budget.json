@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "EB-DWA · 几何求解预算耗尽",
-  "description": "EB-DWA 开发验收场景；固定参考和仿真事件在 experiment 中保存，车辆动力学和安全门沿用正式 Web 框架。",
+  "description": "验证前 8 个控制周期的几何预算耗尽：不得执行未验证参考。此窗口后允许上层全局重规划，不断言永远停车。",
   "config": {
     "backend": {
       "model": "differential",
@@ -73,6 +73,6 @@
     ],
     "events": [],
     "expected": "stopped",
-    "max_steps": 800
+    "max_steps": 8
   }
 }

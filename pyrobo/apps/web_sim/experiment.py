@@ -39,7 +39,7 @@ class Experiment(BaseModel):
     reference_path: list[tuple[float, float]] | None = Field(default=None, min_length=2, max_length=512)
     events: list[SceneEvent] = Field(default_factory=list, max_length=64)
     initial_state: InitialState = Field(default_factory=InitialState)
-    expected: Literal['arrived', 'replan', 'stopped', 'infeasible', 'emergency_stop'] = 'arrived'
+    expected: Literal['arrived', 'replan', 'stopped', 'braking', 'infeasible', 'emergency_stop'] = 'arrived'
     max_steps: int = Field(default=800, ge=1, le=10000)
 
     @model_validator(mode='after')

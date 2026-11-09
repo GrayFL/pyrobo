@@ -51,6 +51,7 @@ class Snapshot:
     local_optimizer: str = 'dwa'
     reference: object = None
     experiment: dict = field(default_factory=dict)
+    planning: dict = field(default_factory=dict)
 
 
 def readonly(values):
@@ -92,6 +93,7 @@ class Session:
         self.trail = deque([start.translation[:2].copy()], maxlen=config['app']['trail_length'])
         self.motion, self.ticks, self.elapsed_ms = None, 0, 0.
         self.planner_status = 'not planned'
+        self.planning = {}
         self.notice = 'Click a goal or use WASD / the stick to drive.'
         self.fault = ''
 
@@ -176,11 +178,14 @@ class Session:
                 self.set_mode(ControlMode.ESTOP if emergency else ControlMode.PAUSED)
                 motion = self.nav.safety.stop(observation, reason='interactive_input_changed')
         self.motion = motion
+        self.planning = {}
         if self.runtime.mode == ControlMode.AUTO:
             output = self.nav.navigation_output(observation, motion)
             if output.diagnostics['replanned']:
                 self.planner_status = str(output.diagnostics['planner_status'])
             self.nav.status = output.status
+            if motion.safety_assessment != 'input_stale':
+                self.planning = {'replanned': output.diagnostics['replanned'], **output.diagnostics['planning']}
         # Even an unverified stop is a finite-force braking attempt. Independent
         # solid collision truth terminates motion if braking cannot prevent impact.
         self.sim.step(motion.command, observation.dt)
@@ -203,7 +208,7 @@ class Session:
                         readonly(self.trail), self.motion, self.nav.progress, str(self.nav.status), self.planner_status,
                         self.sim.collided, self.elapsed_ms, self.notice, self.ticks, self.fault,
                         self.config['backend']['local_optimizer'], getattr(self.nav.optimizer, 'last_reference', None),
-                        self.experiment_snapshot())
+                        self.experiment_snapshot(), dict(self.planning))
 
     def experiment_snapshot(self):
         return {}

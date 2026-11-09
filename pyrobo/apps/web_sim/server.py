@@ -56,6 +56,7 @@ def snapshot_data(snapshot, generation):
                        'left': reference.tube_left, 'right': reference.tube_right, 'gear': reference.gear}
                       if reference is not None else None),
         'experiment': snapshot.experiment,
+        'planning': snapshot.planning,
         'forecast': m.trajectory.poses.position[:, :2] if m and m.trajectory else [],
         'target': snapshot.progress.target.translation[:2] if snapshot.progress else None,
         'status': snapshot.navigation_status, 'planner_status': snapshot.planner_status,

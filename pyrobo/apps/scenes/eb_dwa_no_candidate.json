@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "EB-DWA · 动力学无可行候选",
-  "description": "EB-DWA 开发验收场景；固定参考和仿真事件在 experiment 中保存，车辆动力学和安全门沿用正式 Web 框架。",
+  "description": "首周期故障验收：初始前行 0.6 m/s 且普通速度伺服 jerk 很低，EB 直线参考有效，但 DWA 的保持+制动候选全部失败，必须下发已验证急停。记录实际减速，不把首周期误报为已经停稳。",
   "config": {
     "backend": {
       "model": "differential",
@@ -23,9 +23,9 @@
         0
       ],
       "goal": [
-        2,
-        1.2,
-        0
+        -1,
+        0,
+        3.141592653589793
       ],
       "boxes": [
         [
@@ -67,21 +67,13 @@
         0
       ],
       [
-        0.2,
+        -1,
         0
-      ],
-      [
-        0.2,
-        1.2
-      ],
-      [
-        2,
-        1.2
       ]
     ],
     "events": [],
-    "expected": "stopped",
-    "max_steps": 800,
+    "expected": "braking",
+    "max_steps": 1,
     "initial_state": {
       "linear": 0.6
     }

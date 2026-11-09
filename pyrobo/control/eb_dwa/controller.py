@@ -136,6 +136,8 @@ class ElasticBandDWA:
 
     def consume_replan_request(self):
         requested, self._replan_requested = self._replan_requested, False
+        if requested:
+            self._failed_candidates = 0
         return requested
 
     def _coverage(self, observation):

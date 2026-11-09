@@ -8,6 +8,8 @@ FastAPI + Uvicorn 提供页面、场景库和 WebSocket；浏览器用 Canvas �
 
 固定参考只作为首次全局路线供局部算法处理，可以故意穿过障碍；失败后的重规划仍调用所选真实全局规划器。不能把实验参考当作无碰撞证书。编辑初始位置或目标时，应同步修改参考的首尾点或在实验设置中清除 `reference_path`。新建空白场景会清除实验设置。
 
+replay 默认使用实验的 `max_steps`（普通场景为 700），并按 `expected` 判断是否符合验收预期。预算场景只观察首次 8 个周期；无可行候选场景只观察首周期的有限力制动。故障通过不等于到达：报告始终分别保留 `arrived`、`all_commands_verified` 与 `expected_met`。声明的点云冻结事件允许出现 `input_stale`，但必须触发经过检查的急停；恢复后到达仍不会把这些过期周期记为已验证输入。
+
 ```bash
 python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/eb_dwa_corner.json --steps 300
 python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/eb_dwa_ackermann_reverse.json --steps 150

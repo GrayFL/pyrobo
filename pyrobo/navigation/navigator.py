@@ -216,7 +216,10 @@ class Navigator:
         o, cfg = observation, self.settings
         consume_replan = getattr(self.optimizer, 'consume_replan_request', None)
         if consume_replan is not None and consume_replan():
-            self._path, self.progress, self._last_plan = np.empty((0, 2)), None, -np.inf
+            self._path, self.progress = np.empty((0, 2)), None
+            # A failed local repair retires the route, but does not bypass the
+            # existing global retry budget on every subsequent control tick.
+            self.suspend_tracking(o)
         at_position, at_heading = self._at_goal(o)
         current = planar_state(o.chassis.pose)
         if self._progress_position is None or np.linalg.norm(current[:2] - self._progress_position) > .15 or at_position:

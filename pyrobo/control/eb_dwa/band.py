@@ -115,11 +115,14 @@ def optimize_band(seed, anchor, parameter, active, world, footprint, bounds, con
     upper = np.minimum(anchor[ids]+config.max_deformation_m, [bounds.xmax, bounds.ymax]).ravel()
     x0 = np.clip(x0, lower+1e-9, upper-1e-9)
     status = 'iteration_limit'
+    def counted_iteration(x):
+        nonlocal iterations
+        iterations += 1
+
     try:
         result = least_squares(residual, x0, bounds=(lower, upper), jac_sparsity=pattern.tocsr(),
                                jac='3-point', max_nfev=config.max_iterations, ftol=1e-4, xtol=1e-4, gtol=1e-4,
-                               tr_solver='lsmr')
-        iterations = result.nfev
+                               tr_solver='lsmr', callback=counted_iteration)
         status = 'converged' if result.success else 'iteration_limit'
     except _BudgetExpired:
         status = 'time_budget' if deadline is not None and perf_counter() >= deadline else 'evaluation_limit'
@@ -395,7 +398,9 @@ class EBPathRepairer:
             info['eb_attempts'].append(diagnostics)
             info['eb_evaluations'] += diagnostics['evaluations']
             info['eb_iterations'] += diagnostics['iterations']
-            reason = validation.reason or diagnostics['status']
+            info['eb_geometry_failure'] = validation.reason
+            reason = (diagnostics['status'] if diagnostics['status'] in ('time_budget', 'evaluation_limit')
+                      else validation.reason or diagnostics['status'])
             if validation.valid:
                 best = curve
                 if diagnostics['status'] != 'converged':

@@ -1,6 +1,6 @@
 # Elastic Band + Kinodynamic DWA
 
-实现依据与验收清单见 [设计文档](../../../docs/eb_dwa_design.md)，开发前结果见 [基线报告](../../../docs/eb_dwa_baseline.md)。目前独立几何模块已实现；空间评分、完整控制器和应用接入按后续阶段交付，不能把几何测试当作闭环导航成功。
+实现依据与验收清单见 [设计文档](../../../docs/eb_dwa_design.md)，开发前结果见 [基线报告](../../../docs/eb_dwa_baseline.md)。目前独立几何与空间评分已实现；完整控制器和应用接入按后续阶段交付，不能把独立模块测试当作闭环导航成功。
 
 ## 几何模块
 
@@ -25,7 +25,15 @@
 ## 独立验证
 
 ```bash
-python -m pytest -q tests/test_eb_geometry.py tests/test_geometry.py tests/test_path_tracking.py
+python -m pytest -q tests/test_eb_geometry.py tests/test_eb_scoring.py
 ```
 
 测试读取 `pyrobo/apps/scenes/eb_dwa_*.json` 中的相同世界和参考路线。当前阶段测试显式拆出 `experiment` 元数据；其 Web/CLI 执行支持将在应用接入阶段完成。已有 DWA/TEB、物理积分器、碰撞内核和导航默认行为均未修改。
+
+## 空间匹配评分
+
+`scoring.project_trajectories` 对整个 `(N,T,2)` 轨迹批次做精确线段投影。时间样本依次处理，每个候选以上一次弧长为中心、按实际位移扩展正反搜索窗口；避免交叉路线跳支。起始端的负向延长量用于识别真实倒退，超过末端的运动不继续获得进度奖励。重复全局节点在建立参考前去重，零长分母另有数值保护。
+
+`trajectory_scores` 的横向、航向和走廊代价使用正向弧长增量做梯形积分；倒退单独惩罚。速度误差使用时间增量积分，进度奖励使用末端与起点的弧长差。另有终点越过惩罚，避免投影到末端后继续高速前冲。各项以独立数组返回，和为总评分。车辆的倒车车头方向是参考切线加 π，不能拿几何切线直接惩罚倒车姿态。
+
+控制平滑项只使用调用方显式传入的 `previous_command` 执行反馈；不私自把上次候选当作已执行。`score_rollout` 读取共享 `RolloutBatch` 的保持指令阶段和真实 codec 速度，排除制动尾段及无效填充。碰撞、两项制动可达性、原生指令合法性等硬掩码仍由共享 DWA 物理评估器负责；评分模块没有修改可行性的权限。

@@ -212,6 +212,8 @@
             <label>EB 迭代上限<input id="eb-iterations" type="number" min="1" max="100" step="1" /></label>
           </div>
           <label>EB 优化预算 · s<input id="eb-budget" type="number" min="0.001" max="1" step="0.01" placeholder="仅限制计算次数" /></label>
+          <label><input id="eb-speed-profile" type="checkbox" />按曲率、转向和制动能力提前减速</label>
+          <label>横向加速度使用比例<input id="eb-lateral-fraction" type="number" min="0.01" max="1" step="0.05" /></label>
           <p class="help">紫线为修复参考，淡紫区域为软跟踪走廊，绿色为实际动力学预测。期望净空可在窄路降低，车辆碰撞边界始终保留。</p>
         </div>
         <details>

@@ -36,7 +36,7 @@ class EBDWAConfig:
     max_iterations: int = 24
     max_evaluations: int = 350
     max_refinement_cycles: int = 8
-    time_budget_s: float | None = .06
+    time_budget_s: float | None = None
     validation_depth: int = 12
     max_validation_intervals: int = 8192
     warm_start: bool = True
@@ -59,12 +59,15 @@ class EBDWAConfig:
     backward_weight: float = 4.
     tube_weight: float = 4.
     clearance_weight: float = .08
-    speed_weight: float = .2
+    speed_weight: float = 6.
     control_weight: float = .08
     endpoint_weight: float = 3.
     allow_reverse: bool = True
     reject_lateral_violation: bool = False
     speed_profile: bool = True
+    speed_profile_samples: int = 9
+    speed_response_time_s: float = .5
+    speed_lateral_fraction: float = .3
 
     @property
     def lookahead(self):
@@ -75,7 +78,7 @@ class EBDWAConfig:
         integers = {'max_nodes': 4, 'max_iterations': 1, 'max_evaluations': 1, 'max_refinement_cycles': 1,
                     'validation_depth': 1, 'max_validation_intervals': 4,
                     'topology_attempts': 1, 'linear_samples': 2,
-                    'angular_samples': 2, 'batch_size': 0}
+                    'angular_samples': 2, 'batch_size': 0, 'speed_profile_samples': 3}
         flags = ('warm_start', 'fallback_enabled', 'allow_reverse',
                  'reject_lateral_violation', 'speed_profile')
         for name, value in vars(self).items():
@@ -99,3 +102,5 @@ class EBDWAConfig:
             raise ValueError('obstacle spacing must not exceed ordinary node spacing')
         if self.sharp_corner_angle > np.pi or self.topology_attempts > 5:
             raise ValueError('corner angle must be <= pi and topology_attempts <= 5')
+        if self.speed_lateral_fraction > 1:
+            raise ValueError('lateral fraction must be <= 1')

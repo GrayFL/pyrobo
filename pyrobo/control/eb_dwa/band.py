@@ -1,5 +1,6 @@
 """Incremental XY elastic-band repair with bounded local sparse optimization."""
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from time import perf_counter
 
 import numpy as np
@@ -31,6 +32,34 @@ class _BudgetExpired(Exception):
     pass
 
 
+@lru_cache(maxsize=16)
+def _jacobian_pattern(node_count, active_nodes, spans):
+    """Bounded structural cache; sparsity depends on node indices, not geometry."""
+    count = len(spans)
+    rows = 7*count+(count-1)+2*len(active_nodes)+(node_count-1)
+    pattern = lil_matrix((rows, 2*len(active_nodes)), dtype=np.int8)
+
+    def mark(row, size, nodes):
+        columns = [2*j+k for j, node in enumerate(active_nodes) if node in nodes for k in (0, 1)]
+        pattern[row:row+size, columns] = 1
+
+    stencils = []
+    for i, span in enumerate(spans):
+        nodes = set(range(max(0, span-1), min(node_count, span+3)))
+        stencils.append(nodes)
+        mark(7*i, 7, nodes)
+    offset = 7*count
+    for i in range(count-1):
+        mark(offset+i, 1, stencils[i] | stencils[i+1])
+    offset += count-1
+    for i, node in enumerate(active_nodes):
+        mark(offset+2*i, 2, {node})
+    offset += 2*len(active_nodes)
+    for i in range(node_count-1):
+        mark(offset+i, 1, {i, i+1})
+    return pattern.tocsr()
+
+
 def optimize_band(seed, anchor, parameter, active, world, footprint, bounds, config,
                   *, start_direction, end_direction, gear, max_curvature, deadline):
     """Only active XY nodes are variables; safety is checked after solving."""
@@ -40,7 +69,6 @@ def optimize_band(seed, anchor, parameter, active, world, footprint, bounds, con
     fractions = np.array([0., .25, .5, .75, 1.-1e-6])
     sample_u = np.r_[(parameter[:-1, None]+np.diff(parameter)[:, None]*fractions).ravel(), parameter[-1]]
     weights = np.r_[(np.diff(parameter)[:, None]*np.array([.125, .25, .25, .25, .125])).ravel(), 1e-10]
-    count = len(sample_u)
     def curve_of(xy):
         return GeometricCurve(xy, parameter, start_direction=start_direction, end_direction=end_direction)
 
@@ -89,27 +117,8 @@ def optimize_band(seed, anchor, parameter, active, world, footprint, bounds, con
                                 'initial_cost': 0., 'cost': 0., 'duration_s': 0.}
     # Each Hermite span depends on at most four adjacent XY nodes. Curvature-rate
     # residuals cover the union of two neighbouring stencils.
-    terms = 7
-    rows = terms*count+(count-1)+2*len(ids)+(len(seed)-1)
-    pattern = lil_matrix((rows, 2*len(ids)), dtype=np.int8)
-    def mark(row, size, nodes):
-        columns = [2*j+k for j, node in enumerate(ids) if node in nodes for k in (0, 1)]
-        pattern[row:row+size, columns] = 1
-    stencils = []
-    for i, u in enumerate(sample_u):
-        span = min(np.searchsorted(parameter, u, side='right')-1, len(seed)-2)
-        nodes = set(range(max(0, span-1), min(len(seed), span+3)))
-        stencils.append(nodes)
-        mark(terms*i, terms, nodes)
-    offset = terms*count
-    for i in range(count-1):
-        mark(offset+i, 1, stencils[i] | stencils[i+1])
-    offset += count-1
-    for i, node in enumerate(ids):
-        mark(offset+2*i, 2, {node})
-    offset += 2*len(ids)
-    for i in range(len(seed)-1):
-        mark(offset+i, 1, {i, i+1})
+    spans = np.minimum(np.searchsorted(parameter, sample_u, side='right')-1, len(seed)-2)
+    pattern = _jacobian_pattern(len(seed), tuple(ids), tuple(spans))
     x0 = seed[ids].ravel()
     lower = np.maximum(anchor[ids]-config.max_deformation_m, [bounds.xmin, bounds.ymin]).ravel()
     upper = np.minimum(anchor[ids]+config.max_deformation_m, [bounds.xmax, bounds.ymax]).ravel()
@@ -120,7 +129,7 @@ def optimize_band(seed, anchor, parameter, active, world, footprint, bounds, con
         iterations += 1
 
     try:
-        result = least_squares(residual, x0, bounds=(lower, upper), jac_sparsity=pattern.tocsr(),
+        result = least_squares(residual, x0, bounds=(lower, upper), jac_sparsity=pattern,
                                jac='3-point', max_nfev=config.max_iterations, ftol=1e-4, xtol=1e-4, gtol=1e-4,
                                tr_solver='lsmr', callback=counted_iteration)
         status = 'converged' if result.success else 'iteration_limit'
@@ -239,7 +248,16 @@ class EBPathRepairer:
                     first = old.curve.evaluate(u, 1)
                     direction = np.arctan2(first[1], first[0]) if self.space.can_spin else state[2]+(np.pi if old.gear < 0 else 0.)
                     last = old.curve.tangent[-1]
-                    curve = GeometricCurve(xy, parameter, start_direction=direction, end_direction=np.arctan2(last[1], last[0]))
+                    terminal = np.arctan2(last[1], last[0])
+                    if not self.space.can_spin and reaches_goal and len(xy) == 2:
+                        # With only the goal left, retaining the old end tangent
+                        # overconstrains a centimetre-scale lateral correction.
+                        # A circular-arc tangent avoids forcing a second bend
+                        # into this short connector; Navigator requires actual goal yaw
+                        # and a stopped chassis before declaring arrival.
+                        chord = xy[-1]-xy[0]
+                        terminal = 2*np.arctan2(chord[1], chord[0])-direction
+                    curve = GeometricCurve(xy, parameter, start_direction=direction, end_direction=terminal)
                     validation = self._validate(curve, world, observation, old.gear)
                     if validation.valid:
                         reference = EBReference.from_curve(curve, world, self.footprint, observation.bounds, cfg, gear=old.gear)
@@ -295,6 +313,18 @@ class EBPathRepairer:
                 break
             end = new_end
         active_intervals = [(a, b) for a, b in inspected.active if a < end]
+        if not self.space.can_spin:
+            delta = scan_xy[1]-scan_xy[0]
+            heading = np.arctan2(delta[1], delta[0])+(np.pi if gear < 0 else 0.)
+            error = abs(float(wrap_angle(state[2]-heading)))
+            lateral = np.linalg.norm(state[:2]-scan_xy[0])
+            if error > 1e-3 or lateral > .01:
+                # Rejoining a line from a different heading needs an S-shaped
+                # transition, not just one turn. Reserve room for both arcs
+                # before selecting free nodes, including after a global replan.
+                radius = self.model.minimum_turn_radius
+                transition = max(cfg.active_padding_m, 4*radius*error, np.sqrt(6*lateral*radius))
+                active_intervals.append((s0, min(end, s0+transition)))
         nodes = [s0, end]
         cursor = s0
         while cursor < end-1e-8:
@@ -306,6 +336,8 @@ class EBPathRepairer:
         # 1e-14 m before the explicit endpoint. Preserve the exact endpoint and
         # remove numerical zero-length spans before forming cubic derivatives.
         parameter = parameter[np.r_[np.diff(parameter) > 1e-8, True]]
+        if not self.space.can_spin and end >= full_s[-1]-1e-8 and end-s0 < cfg.node_spacing_m:
+            parameter = np.array([s0, end])
         if len(parameter) > cfg.max_nodes:
             info['eb_required_nodes'] = len(parameter)
             return finish(None, 'node_budget')
@@ -329,6 +361,8 @@ class EBPathRepairer:
             if needs_alignment:
                 active[1:-1] |= parameter[1:-1] < s0+cfg.active_padding_m
         terminal = float(np.arctan2(last_delta[1], last_delta[0]))
+        if not self.space.can_spin and len(anchor) == 2 and end >= full_s[-1]-1e-8:
+            terminal = 2*terminal-direction
         info.update(eb_nodes=len(parameter), eb_active_nodes=int(active.sum()),
                     eb_conflict_count=int(sum(a < end for a, _ in inspected.conflicts)), eb_rejoin_s=rejoin,
                     eb_triggers={name: int(mask[inspected.s <= end].sum()) for name, mask in inspected.triggers.items()},

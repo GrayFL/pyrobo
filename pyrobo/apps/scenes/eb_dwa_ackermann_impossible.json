@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "EB-DWA · 阿克曼转弯空间不足",
-  "description": "EB-DWA 开发验收场景；固定参考和仿真事件在 experiment 中保存，车辆动力学和安全门沿用正式 Web 框架。",
+  "description": "观察 8 秒内汽车转弯空间不足时的几何拒绝、重规划与最终持续停稳；允许在已验证安全段推进。该有界实验不证明连续空间全局无路。",
   "config": {
     "backend": {
       "model": "ackermann",
@@ -86,6 +86,6 @@
     ],
     "events": [],
     "expected": "infeasible",
-    "max_steps": 800
+    "max_steps": 80
   }
 }

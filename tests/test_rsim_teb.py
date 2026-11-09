@@ -36,7 +36,10 @@ def test_eb_dwa_stack_configuration_roundtrip_limits_and_logical_budget():
     np.testing.assert_array_equal(optimizer.command_space.bounds()[1], [.3, .4])
     assert guard.index is index
     with pytest.raises(ValueError, match='time_budget_s=None'):
-        replace(lockstep_config(), controller=EBDWAConfig())
+        replace(lockstep_config(), controller=EBDWAConfig(time_budget_s=.06))
+    default_logical = replace(lockstep_config(), controller=EBDWAConfig())
+    assert default_logical.controller.time_budget_s is None
+    assert isinstance(default_logical.control()[2], ElasticBandDWA)
     assert isinstance(lockstep_config(local_optimizer='eb_dwa').control()[2], ElasticBandDWA)
 
 

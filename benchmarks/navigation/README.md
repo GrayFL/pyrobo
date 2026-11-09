@@ -2,12 +2,30 @@
 
 本目录提供以下实验，结果保留失败样本、参数、源代码摘要和环境版本。
 
+EB-DWA 的保存场景、逐周期指标与同场景算法对照使用：
+
+```bash
+python -m benchmarks.navigation.eb_dwa --scenes all --logical --output reports/eb-cases
+python -m benchmarks.navigation.eb_dwa --scenes narrow_road --optimizers dwa teb eb_dwa \
+  --planners rrt_connect voronoi --seeds 7 11 23 --output reports/eb-narrow
+python -m benchmarks.navigation.teb --include-eb --repeats 30 --output reports/eb-latency.json
+```
+
+`--logical` 关闭 EB 和 RRT 的墙钟预算，保留评估/迭代/扩展上限；专门的预算故障场景仍保留其预算。Voronoi 本身不使用 seed，因此不同 seed 行是重复运行。实际 Web 服务采用相同 `SceneSession`；回放不会在计算时推进物理时间，不能证明硬实时。
+
+当前 EB 默认 `time_budget_s=None`，所以 `--logical` 对普通 EB 场景额外关闭的是 RRT 墙钟预算。最终 20 场景、重复窄路、60 ms 失败对照与串行性能见 [EB-DWA 验收报告](../../docs/eb_dwa_results.md)；可跟踪原始汇总为 [eb_dwa_results.json](eb_dwa_results.json)。每个 `.scene.json` 都可直接交给 `python -m pyrobo.apps.web_sim.replay`，或导入网页复测。
+
+每次运行保留完整展开场景、SHA256、所有逐周期数据以及失败结果。`local_ms` 是局部算法与候选验证；`tick_ms` 包括全局导航、独立安全门和实体步进；`eb_ms` / `dwa_ms` / `speed_profile_ms` 是内部阶段；全局搜索耗时另列。回放在记录器中的额外几何查询不计入这些阶段，包含于 `wall_seconds_with_metrics`。性能对照应串行执行。
+
+净空为完整矩形（含 margin、offset）、点半径和边界的查询值，另外记录独立实体碰撞。实际曲率取 `omega/v`，只统计 `abs(v)>=.05 m/s`；变化率仅统计相邻移动点且间距大于 .005 m。直道/弯道速度分别选 `abs(curvature)<.15` / `>=.4` 的移动点。制动起始距离是首次纵向减速时到前方全局折线转角（角差 >.25 rad）的距离，无相应点时为 null。横向误差分别相对当前全局路径与当前 EB 参考，不能把两种误差混作同一指标；EB 改变路径形状本就可能增大全局横向距离。统计中保留重规划和所有停止周期。
+
 | 入口 | 用途 | 物理时间 |
 | --- | --- | --- |
 | `planning` | 相同预算、多种子、两种全局规划器的成功率与路径质量 | 不执行车辆 |
 | `control` | DWA + 全局路线 + 动力学闭环，前视距离 / 车型 / 速度 / 矩形对比 | 固定 dt；求解时物理暂停 |
 | `rsim_platform` | 实际 RSim 多进程、计算卡顿与传感器失效 | 随单调时钟持续前进 |
-| `teb` | 同一实测状态和原始点云下，DWA / TEB 局部决策的延迟与内存 | 固定输入，不推进被测控制器的物理 |
+| `teb` | 同一实测状态和原始点云下，DWA / TEB（`--include-eb` 增加 EB-DWA）延迟与内存 | 固定输入，不推进被测控制器的物理 |
+| `eb_dwa` | 保存 Web 场景的三算法对照、故障验收与逐周期指标 | 固定 dt；求解时物理暂停 |
 
 同步闭环的计算耗时是真实测量，但不能用它证明卡顿时的物理安全。只有第三类实验用于这项结论。
 

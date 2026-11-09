@@ -24,6 +24,7 @@ def replay(scene, steps=None, *, on_step=None):
     known_stale = experiment is not None and any(e.kind == 'freeze_cloud' for e in experiment.events)
     contract_ok, all_stopping = True, True
     replans = replan_requests = no_candidates = 0
+    geometric_rejections, stopped_tail = 0, 0.
     for _ in range(steps):
         s = session.tick()
         verified = verified and s.motion.safe
@@ -38,6 +39,10 @@ def replay(scene, steps=None, *, on_step=None):
         replan_requests += bool(extra.get('request_replan'))
         replans += bool(s.planning.get('replanned') and not s.planning.get('experiment_reference'))
         no_candidates += m.diagnostics.reason == 'no_feasible_candidate' and m.diagnostics.candidate_count > 0
+        geometric_rejections += bool(extra.get('eb_geometry_failure') or extra.get('eb_status') in
+                                     ('no_safe_rejoin', 'curvature_violation', 'collision', 'geometric_infeasible'))
+        resting = max(abs(s.state.velocity.linear), abs(s.state.velocity.angular)) < 1e-3
+        stopped_tail = stopped_tail+session.config['app']['dt'] if resting and m.command.mode in ('estop', 'soft_stop') else 0.
         minimum_gap = min(minimum_gap, s.motion.diagnostics.clearance_m)
         if on_step is not None:
             on_step(s, session)
@@ -49,7 +54,8 @@ def replay(scene, steps=None, *, on_step=None):
     outcome = {'arrived': arrived, 'replan': arrived and replans > 0 and replan_requests > 0,
                'stopped': all_stopping and stopped and not arrived,
                'braking': no_candidates > 0 and all_stopping,
-               'infeasible': all_stopping and stopped and replan_requests > 0,
+               'infeasible': (not arrived and stopped and stopped_tail >= 1.-1e-8 and replan_requests > 0
+                              and geometric_rejections > 0 and s.navigation_status in ('blocked', 'no_path')),
                'emergency_stop': s.navigation_status == 'emergency_stop'}[expected]
     # A declared stale-cloud event can correctly cause safe=False (freshness is
     # absent). Keep that fact in all_commands_verified; separately check that
@@ -62,7 +68,8 @@ def replay(scene, steps=None, *, on_step=None):
             'minimum_clearance_m': minimum_gap if np.isfinite(minimum_gap) else None, 'fault': s.fault,
             'expected': expected, 'expected_met': expected_met, 'assessments': dict(assessments),
             'reasons': dict(reasons), 'statuses': dict(statuses), 'events': list(session.event_log),
-            'global_plans': replans, 'replan_requests': replan_requests, 'no_candidate_stops': no_candidates}
+            'global_plans': replans, 'replan_requests': replan_requests, 'no_candidate_stops': no_candidates,
+            'geometric_rejections': geometric_rejections, 'stopped_tail_seconds': stopped_tail}
 
 
 def main():

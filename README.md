@@ -1,6 +1,6 @@
 # pyrobo
 
-面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → DWA / TEB 局部导航 → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
+面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → DWA / TEB / EB-DWA 局部导航 → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
 
 - **矩形车体**：任意长宽、朝向和纵向参考点偏移；提供 0.5 × 0.5 m、1 × 0.5 m 两个版型。全局规划、局部预测、路径验证和实体仿真都检查矩形。
 - **RRT-Connect** 与 **Voronoi + D* Lite**：直接在点云上生成有序航点，不默认栅格化或降采样。
@@ -57,7 +57,7 @@ print(out.status, sim.collided)
 
 选择 TEB 可传 `controller=TEBConfig()`，或注入 `local_optimizer=TimedElasticBand(...)`（均从 `pyrobo` 导入）。阿克曼示例为 `Navigator(model=Ackermann(), footprint=Footprint.long(offset_x=.25), controller=TEBConfig(lookahead=1.6))`。Web「局部规划」和 Pygame `--local-optimizer teb` 支持切换；手动辅助继续使用 DWA。优化预算为软上限，实际输出仍经过完整动力学、矩形扫掠与制动验证。接口、参数、参考资料和范围见 [TEB 说明](pyrobo/control/teb/README.md)。
 
-`controller=EBDWAConfig()` 或 `local_optimizer=ElasticBandDWA(...)` 选择 EB-DWA：先修复和平滑全局路径的局部几何，再用现有 DWA 按完整物理轨迹的空间进度评分。Web、Pygame 和 RSim 入口均接受 `eb_dwa`，默认仍为 DWA。Web 场景库提供 20 个可重放的几何、运动与故障实验，显示独立的 EB 参考曲线和软走廊。接口、实际执行反馈及当前验收进度见 [EB-DWA 说明](pyrobo/control/eb_dwa/README.md)。
+`controller=EBDWAConfig()` 或 `local_optimizer=ElasticBandDWA(...)` 选择 EB-DWA：先修复和平滑全局路径的局部几何，再用现有 DWA 按完整物理轨迹的空间进度评分；速度参考复用共享动力学的加速和制动响应。Web、Pygame 和 RSim 入口均接受 `eb_dwa`，默认仍为 DWA。Web 场景库提供 20 个可重放的几何、运动与故障实验，显示独立的 EB 参考曲线和软走廊。EB 默认限制计算次数，`time_budget_s=None`；可显式启用软时间预算，修复耗时可能超过控制周期。接口与实际执行反馈见 [EB-DWA 说明](pyrobo/control/eb_dwa/README.md)，到达率、失败记录和耗时见 [验收报告](docs/eb_dwa_results.md)。
 
 **输出是模型指令**：差速返回 `WheelCommand(left, right, mode)`，轮速单位 m/s；阿克曼返回 `AckermannCommand(speed, steering, mode)`，单位 m/s、rad。`Twist2D` 表示实测车体速度；旧代码读取 `out.command.linear/angular` 需迁移为模型指令。发送速度话题可用 `model.from_twist(Twist2D(...))`；阿克曼会拒绝零线速度的非零偏航要求。
 

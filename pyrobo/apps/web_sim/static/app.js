@@ -74,6 +74,8 @@ function sync(fit = false) {
   $("eb-nodes").value = c.eb_dwa?.max_nodes ?? 96;
   $("eb-iterations").value = c.eb_dwa?.max_iterations ?? 24;
   $("eb-budget").value = c.eb_dwa?.time_budget_s ?? "";
+  $("eb-speed-profile").checked = c.eb_dwa?.speed_profile ?? true;
+  $("eb-lateral-fraction").value = c.eb_dwa?.speed_lateral_fraction ?? .3;
   $("experiment").value = draft.experiment ? JSON.stringify(draft.experiment, null, 2) : "";
   $("body-length").value = c.footprint.length;
   $("body-width").value = c.footprint.width;
@@ -211,6 +213,8 @@ function connect() {
         $("diagnostics").textContent += `\nTEB ${teb.teb_status} · ${teb.teb_nodes} 节点 · ${teb.teb_evaluations} 次计算\n代价 ${teb.teb_cost.toFixed(2)} · ${teb.teb_warm_started ? "复用上次轨迹" : "新轨迹"}`;
       if (teb?.eb_status)
         $("diagnostics").textContent += `\nEB ${teb.eb_status} · ${teb.eb_active_nodes}/${teb.eb_nodes} 活动节点\nEB ${(teb.eb_duration_s * 1000).toFixed(1)} ms · DWA ${((teb.dwa_duration_s || 0) * 1000).toFixed(1)} ms\n${teb.eb_cache_hit ? "复用曲线" : "修复参考"} · ${teb.eb_coverage_m.toFixed(2)} m · ${teb.eb_evaluations} 次计算${teb.request_replan ? " · 请求全局重规划" : ""}`;
+      if (teb?.eb_speed_max_mps !== undefined)
+        $("diagnostics").textContent += `\n参考速度 ${teb.eb_speed_min_mps.toFixed(2)}–${teb.eb_speed_max_mps.toFixed(2)} m/s · 前视 ${teb.eb_track_lookahead_m.toFixed(2)} m`;
       if (data.reason) $("diagnostics").textContent += `\n${data.reason}`;
       if (data.experiment?.events?.length)
         $("diagnostics").textContent += `\n实验事件 ${data.experiment.events.length}${data.experiment.cloud_frozen ? " · 点云已冻结" : ""}`;
@@ -602,6 +606,7 @@ const setters = {
   "eb-iterations": (c, v) => (c.eb_dwa.max_iterations = v),
   "eb-clearance": (c, v) => (c.eb_dwa.preferred_clearance = v),
   "eb-lookahead": (c, v) => (c.eb_dwa.track_lookahead_m = v),
+  "eb-lateral-fraction": (c, v) => (c.eb_dwa.speed_lateral_fraction = v),
   budget: (c, v) => (c[c.backend.planner].time_budget = v),
   "planner-clearance": (c, v) => (c[c.backend.planner].clearance = v),
   mass: (c, v) => (c.dynamics.mass = v),
@@ -640,6 +645,10 @@ $("eb-budget").onchange = () => {
     const value = $("eb-budget").value.trim() ? number("eb-budget") : null;
     change((s) => (s.config.eb_dwa.time_budget_s = value));
   } catch (e) { message(e.message, true); }
+};
+$("eb-speed-profile").onchange = () => {
+  const enabled = $("eb-speed-profile").checked;
+  change((s) => (s.config.eb_dwa.speed_profile = enabled));
 };
 $("apply-experiment").onclick = () => {
   try {

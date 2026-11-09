@@ -102,10 +102,11 @@ class Scene(BaseModel):
             (eb.prediction_time+eb.braking_timeout)/min(dynamics.substep, eb.integration_dt))
         if (eb.max_nodes > 128 or eb.max_iterations > 100 or eb.max_evaluations > 10000 or
                 eb.max_refinement_cycles > 32 or eb.max_validation_intervals > 32768 or
+                eb.speed_profile_samples > 33 or eb.speed_response_time_s > 3 or
                 eb.linear_samples*eb.angular_samples > 5000 or eb_work > 2_000_000 or
                 (eb.time_budget_s is not None and eb.time_budget_s > 1.)):
             raise ValueError('EB-DWA workload exceeds the interactive limit')
-        if planner.time_budget > 10 or planner.path_spacing < .01:
+        if (planner.time_budget is not None and planner.time_budget > 10) or planner.path_spacing < .01:
             raise ValueError('interactive planners require time_budget <= 10 s and path_spacing >= 0.01 m')
         if config['rrt_connect'].get('max_extensions', 1800) > 100000:
             raise ValueError('max_extensions exceeds 100000')

@@ -14,6 +14,7 @@ from ..dwa.scoring import navigation_scores
 from .band import EBPathRepairer
 from .config import EBDWAConfig
 from .scoring import score_rollout
+from .speed import SpeedPlanner
 
 
 class _EBNavigationPolicy(NavigationPolicy):
@@ -24,16 +25,22 @@ class _EBNavigationPolicy(NavigationPolicy):
     def reset(self):
         super().reset()
         self.reference = self.execution_command = self.speed_reference = None
+        self.preview_distance = 0.
+        self.heading_error = None
 
     def prepare(self, observation, request, space, config, codec, previous):
         ref = self.reference
         if ref is not None:
-            lookahead = self.eb_config.track_lookahead_m
+            cfg = self.eb_config
+            lookahead = min(ref.s[-1], max(cfg.track_lookahead_m,
+                abs(observation.chassis.velocity.linear)*cfg.track_lookahead_time_s))
+            self.preview_distance = lookahead
             target = ref.sample(min(lookahead, ref.s[-1]))[0]
             yaw = float(np.interp(min(lookahead, ref.s[-1]), ref.s, ref.yaw))
             request = replace(request, local_target=pose2d(*target, yaw, frame=observation.frame),
                               remaining_path=Path(path_poses(ref.xy, observation.frame)))
         context = super().prepare(observation, request, space, config, codec, previous)
+        self.heading_error = float(context.signed_error)
         if ref is not None and ref.gear < 0 and context.mode == 'following':
             delta = context.target-context.state[:2]
             error = float(wrap_angle(np.arctan2(delta[1], delta[0])+np.pi-context.state[2]))
@@ -42,6 +49,10 @@ class _EBNavigationPolicy(NavigationPolicy):
             context.desired = np.array([speed, np.clip(turn, context.lower[1], context.upper[1])])
             context.anchors = np.vstack((context.anchors, context.desired))
             context.signed_error = error
+        if ref is not None and context.mode == 'following' and self.speed_reference is not None:
+            cap = abs(np.interp(lookahead, ref.s, self.speed_reference))
+            context.desired[0] = np.sign(context.desired[0])*min(abs(context.desired[0]), cap)
+            context.anchors = np.vstack((context.anchors, context.desired))
         if ref is not None and context.mode == 'following' and np.linalg.norm(ref.xy[-1]-context.goal[:2]) < 1e-6:
             # Put sub-grid terminal speeds into the ordinary sampler. Without
             # this anchor a long hold horizon can prefer steering away from a
@@ -66,7 +77,14 @@ class _EBNavigationPolicy(NavigationPolicy):
                                speed_reference=self.speed_reference)
         if np.linalg.norm(self.reference.xy[-1]-context.goal[:2]) < 1e-6:
             final = codec.poses(prediction.states[:, prediction.prediction_end])
-            weight = 2*max(0., 1-context.distance_to_goal/self.eb_config.track_lookahead_m)
+            # Goal orientation belongs to candidates that actually reach its
+            # position tolerance. Applying it a whole lookahead early prevents
+            # the lateral approach needed beside a wall.
+            distance = np.linalg.norm(final[:, :2]-context.goal[:2], axis=1)
+            weight = 2*np.clip(1-distance/self.eb_config.goal_tolerance, 0., 1.)
+            body_yaw = self.reference.yaw+(np.pi if self.reference.gear < 0 else 0.)
+            if np.max(abs(wrap_angle(body_yaw-context.goal[2]))) <= self.eb_config.yaw_tolerance:
+                weight = np.maximum(weight, 2*max(0., 1-context.distance_to_goal/self.eb_config.track_lookahead_m))
             terminal = weight*(1-np.cos(final[:, 2]-context.goal[2]))
             scores.terms['terminal_heading'] = terminal
             scores.costs[:] += terminal
@@ -103,6 +121,7 @@ class ElasticBandDWA:
         self._teleop = DWAEngine(teleop_config or dwa, self.footprint, model=model, dynamics=self.plant,
                                 command_space=self.command_space, index=self.index, input_limits=input_limits)
         self.repairer = EBPathRepairer(cfg, self.footprint, model=model, index=self.index)
+        self.speed_planner = SpeedPlanner(self.plant, self.command_space, self.footprint, cfg)
         self.reset()
 
     @property
@@ -113,6 +132,7 @@ class ElasticBandDWA:
         self._engine.reset()
         self._teleop.reset()
         self.repairer.reset()
+        self.speed_planner.reset()
         self.last_reference = None
         self._executed = self._execution_stamp = None
         self._reachability = self._reachability_state = self._reachability_stamp = None
@@ -189,6 +209,7 @@ class ElasticBandDWA:
                           0 <= observation.timestamp-self._execution_stamp <= self.config.prediction_time)
         self.policy.execution_command = self._executed if fresh_feedback else None
         self.policy.reference = None
+        self.policy.speed_reference = None
         info = {}
         if request.policy == MotionPolicy.NAVIGATION:
             position = planar_state(observation.chassis.pose)[:2]
@@ -207,6 +228,11 @@ class ElasticBandDWA:
                     return replace(result, diagnostics=replace(result.diagnostics, candidate_count=0, feasible_count=0,
                                                                  elapsed_s=perf_counter()-started))
                 self.policy.reference = repaired.reference
+                terminal = np.linalg.norm(repaired.reference.xy[-1]-planar_state(request.goal)[:2]) < 1e-6
+                if self.config.speed_profile:
+                    profile = self.speed_planner.update(repaired.reference, observation, terminal=terminal)
+                    self.policy.speed_reference = profile.values
+                    info.update(profile.diagnostics)
         dwa_started = perf_counter()
         result = self._engine.optimize(observation, request, collision_world=world)
         dwa_duration = perf_counter()-dwa_started
@@ -215,6 +241,8 @@ class ElasticBandDWA:
             if self._failed_candidates >= 6:
                 self._replan_requested = self.config.fallback_enabled
         info.update(optimizer='eb_dwa', dwa_duration_s=dwa_duration,
+                    eb_track_lookahead_m=self.policy.preview_distance,
+                    eb_heading_error=self.policy.heading_error,
                     dwa_candidate_count=result.diagnostics.candidate_count,
                     dwa_feasible_count=result.diagnostics.feasible_count,
                     eb_execution_feedback=bool(fresh_feedback and self._executed is not None),

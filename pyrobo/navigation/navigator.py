@@ -79,6 +79,7 @@ class Navigator:
         self._observation, self._last_timestamp = None, None
         self._last_plan = -np.inf
         self._progress_position, self._progress_time = None, None
+        self._progress_turn_error = None
         self.tracker, self.progress = PathTracker(), None
         self._planning = {}
         self._planner_status, self._replanned = 'cached', False
@@ -133,6 +134,7 @@ class Navigator:
             self.tracker.reset()
             self._last_plan = -np.inf
             self._progress_position, self._progress_time = current[:2].copy(), o.timestamp
+            self._progress_turn_error = None
             self._signature = signature
         self._observation, self._last_timestamp = o, o.timestamp
         self.progress = self.tracker.update(o.chassis.pose, self.settings.lookahead) if len(self._path) else None
@@ -147,6 +149,7 @@ class Navigator:
     def suspend_tracking(self, observation):
         """Keep the stall clock from treating deliberate manual/paused motion as failure."""
         self._progress_position = planar_state(observation.chassis.pose)[:2].copy()
+        self._progress_turn_error = None
         self._progress_time = observation.timestamp
 
     def _plan(self, o):
@@ -222,8 +225,19 @@ class Navigator:
             self.suspend_tracking(o)
         at_position, at_heading = self._at_goal(o)
         current = planar_state(o.chassis.pose)
-        if self._progress_position is None or np.linalg.norm(current[:2] - self._progress_position) > .15 or at_position:
+        turn_error = None
+        if (getattr(self.optimizer, 'repairs_global_path', False) and self.command_space.can_spin
+                and self.last_motion is not None and self.last_motion.diagnostics.extra.get('controller_mode') == 'turning'):
+            error = self.last_motion.diagnostics.extra.get('eb_heading_error')
+            turn_error = abs(error) if error is not None else None
+        if self._progress_turn_error is None or turn_error is None:
+            self._progress_turn_error = turn_error
+        # Only decreasing alignment error counts. Oscillating or continuously
+        # spinning cannot keep postponing the ordinary stall/replan timeout.
+        turning_progress = turn_error is not None and turn_error < self._progress_turn_error-.15
+        if self._progress_position is None or np.linalg.norm(current[:2] - self._progress_position) > .15 or at_position or turning_progress:
             self.suspend_tracking(o)
+            self._progress_turn_error = turn_error
         elif o.timestamp - self._progress_time > self.stall_timeout:
             self._path, self.progress, self._last_plan = np.empty((0, 2)), None, -np.inf
             self._progress_time = o.timestamp

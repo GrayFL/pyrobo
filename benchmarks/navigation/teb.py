@@ -1,4 +1,4 @@
-"""Measure DWA/TEB on identical measured states and unmodified point clouds.
+"""Measure local optimizers on identical measured states and unmodified point clouds.
 
 Latency includes local optimization, rollout and brake checks; global planning
 and the independent final execution gate are excluded. Python allocation peak
@@ -15,12 +15,12 @@ import numpy as np
 
 from pyrobo import (Ackermann, Bounds2D, ChassisDynamics, ChassisState, DifferentialDrive,
     DWAConfig, DWAEngine, Footprint, MotionPolicy, MotionRequest, Path as Route, PointCloud,
-    RobotObservation, TEBConfig, TimedElasticBand, pose2d)
+    RobotObservation, TEBConfig, TimedElasticBand, EBDWAConfig, ElasticBandDWA, pose2d)
 from pyrobo.core.geometry import path_poses
 from .planning import provenance
 
 
-def benchmark(repeats=30):
+def benchmark(repeats=30, *, include_eb=False):
     report = {'schema': 1, 'kind': 'local_optimizer_latency', 'environment': provenance(), 'runs': []}
     for model in (DifferentialDrive(), Ackermann()):
         for points in (1000, 10000):
@@ -32,8 +32,11 @@ def benchmark(repeats=30):
                 observations.append(RobotObservation(state, cloud, Bounds2D(-4., 8., -2., 2.), .1))
                 state = plant.step(state, model.command(.35, 0.), .1).state
             route = Route(path_poses([[0, 0], [6, 0]], 'world'))
-            for name, cls, config in [('dwa', DWAEngine, DWAConfig(prediction_time=2.4)),
-                                      ('teb', TimedElasticBand, TEBConfig())]:
+            configurations = [('dwa', DWAEngine, DWAConfig(prediction_time=2.4)),
+                              ('teb', TimedElasticBand, TEBConfig())]
+            if include_eb:
+                configurations.append(('eb_dwa', ElasticBandDWA, EBDWAConfig(prediction_time=2.4)))
+            for name, cls, config in configurations:
                 engine = cls(config, Footprint.long(offset_x=.25), model=model)
                 times, candidates, evaluations, statuses, gaps, stop_distances = [], [], [], [], [], []
                 for i, observation in enumerate(observations):
@@ -46,8 +49,8 @@ def benchmark(repeats=30):
                     if i:  # import/index/first sparse-structure warmup excluded, identical for both
                         times.append(elapsed*1000)
                         candidates.append(result.diagnostics.candidate_count)
-                        evaluations.append(result.diagnostics.extra.get('teb_evaluations', 0))
-                        statuses.append(result.diagnostics.extra.get('teb_status', 'sampled'))
+                        evaluations.append(result.diagnostics.extra.get('teb_evaluations', result.diagnostics.extra.get('eb_evaluations', 0)))
+                        statuses.append(result.diagnostics.extra.get('teb_status', result.diagnostics.extra.get('eb_status', 'sampled')))
                         gaps.append(result.diagnostics.clearance_m)
                         tail = result.trajectory.poses.position[result.trajectory.prediction_end:, :2]
                         stop_distances.append(float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum()))
@@ -55,6 +58,9 @@ def benchmark(repeats=30):
                 # measure an aborted solve and a different, often smaller command set.
                 if name == 'teb':
                     engine.config = replace(config, time_budget=None)
+                elif name == 'eb_dwa':
+                    engine.config = replace(config, time_budget_s=None)
+                    engine.repairer.config = engine.config
                 tracemalloc.start()
                 memory_result = engine.optimize(observations[-1], request)
                 _, peak = tracemalloc.get_traced_memory()
@@ -62,6 +68,7 @@ def benchmark(repeats=30):
                 report['runs'].append({'model': type(model).__name__, 'optimizer': name, 'points': len(cloud.points),
                     'config': asdict(config), 'repeats': repeats, 'latency_ms': times,
                     **dict(zip(('p50_ms', 'p95_ms', 'p99_ms'), map(float, np.percentile(times, [50, 95, 99])))),
+                    'max_ms': max(times),
                     'python_peak_bytes': peak, 'candidates': candidates, 'residual_evaluations': evaluations,
                     'memory_scope': 'one solve and verification; time budget disabled during tracemalloc',
                     'memory_candidates': memory_result.diagnostics.candidate_count,
@@ -74,10 +81,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repeats', type=int, default=30)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--include-eb', action='store_true')
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error('repeats must be positive')
-    report = benchmark(args.repeats)
+    report = benchmark(args.repeats, include_eb=args.include_eb)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     for row in report['runs']:

@@ -73,6 +73,20 @@ def test_manual_delegation_preserves_index_and_does_not_repair_navigation():
         assert engine.last_reference is None
 
 
+def test_speed_profile_can_be_disabled_and_logical_rrt_roundtrips(monkeypatch):
+    payload = scene('straight').model_dump()
+    payload['config']['rrt_connect']['time_budget'] = None
+    payload['config']['eb_dwa']['speed_profile'] = False
+    case = Scene.model_validate(payload)
+    assert Scene.model_validate_json(case.model_dump_json()).config == case.config
+    session = SceneSession(case)
+    monkeypatch.setattr(session.nav.optimizer.speed_planner, 'update',
+                        lambda *args, **kwargs: pytest.fail('disabled speed planner ran'))
+    snapshot = session.tick(actions=[Action('mode', 'auto')])
+    assert snapshot.motion.safe and snapshot.reference is not None
+    assert 'eb_speed_max_mps' not in snapshot.motion.diagnostics.extra
+
+
 def test_geometry_budget_failure_never_enters_dwa_and_stale_input_clears_reference(monkeypatch):
     session = SceneSession(scene('budget'))
     engine = session.nav.optimizer
@@ -146,7 +160,8 @@ def test_invalid_experiment_fails_before_start(edit):
 
 
 @pytest.mark.parametrize('name,limit', [('straight', 160), ('corner', 240), ('differential_spin', 200),
-                                     ('ackermann_reverse', 130)])
+                                     ('ackermann_reverse', 130), ('ackermann_corner', 280),
+                                     ('long_car_gate', 200), ('wall_clearance', 800)])
 def test_real_closed_loop_basic_maneuvers(name, limit):
     session = SceneSession(scene(name))
     session.apply(Action('mode', 'auto'))
@@ -162,6 +177,22 @@ def test_real_closed_loop_basic_maneuvers(name, limit):
     assert max(abs(snapshot.state.velocity.linear), abs(snapshot.state.velocity.angular)) < 1e-3
     if name == 'ackermann_reverse':
         assert np.max(abs(snapshot.trail[:, 1])) < .05  # no terminal steering to waste distance
+
+
+def test_deliberate_eb_spin_is_progress_and_does_not_trigger_global_stall_reset():
+    session = SceneSession(scene('differential_spin'))
+    # Match a browser episode that was paused for one physical tick before AUTO.
+    session.tick()
+    session.apply(Action('mode', 'auto'))
+    turning, elapsed = 0, 0.
+    for _ in range(65):
+        snapshot = session.tick()
+        assert snapshot.motion.safe and not snapshot.collided
+        assert not (snapshot.planning.get('replanned') and not snapshot.planning.get('experiment_reference'))
+        if snapshot.motion.diagnostics.extra.get('controller_mode') == 'turning':
+            turning += 1
+            elapsed += session.config['app']['dt']
+    assert turning > 20 and elapsed > 2.
 
 
 def test_web_builtins_and_json_diagnostics(tmp_path):

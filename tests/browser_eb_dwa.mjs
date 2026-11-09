@@ -26,6 +26,11 @@ try {
   await page.waitForFunction(() => document.querySelector('#local-optimizer').value === 'eb_dwa');
   assert.ok(await page.locator('#eb-settings').isVisible());
   assert.ok((await page.locator('#experiment').inputValue()).includes('reference_path'));
+  assert.ok(await page.locator('#eb-speed-profile').isChecked());
+  await page.locator('#eb-speed-profile').uncheck();
+  await page.locator('#eb-speed-profile').check();
+  await page.locator('#eb-lateral-fraction').fill('0.3');
+  await page.locator('#eb-lateral-fraction').press('Tab');
   await page.locator('#eb-clearance').fill('0.18');
   await page.locator('#eb-clearance').press('Tab');
   await page.locator('#eb-budget').fill('');
@@ -37,22 +42,36 @@ try {
   const exported = JSON.parse(await readFile(await (await download).path(), 'utf8'));
   assert.equal(exported.config.eb_dwa.preferred_clearance, .18);
   assert.equal(exported.config.eb_dwa.time_budget_s, null);
+  assert.equal(exported.config.eb_dwa.speed_profile, true);
+  assert.equal(exported.config.eb_dwa.speed_lateral_fraction, .3);
   assert.deepEqual(exported.experiment.reference_path, [[0, 0], [5, 0], [5, 5]]);
   await page.locator('#save').click();
   await page.waitForFunction(() => document.querySelector('#message').textContent.startsWith('已保存'));
-  for (const name of ['corner', 'ackermann_reverse']) {
+  const cases = process.env.EB_BROWSER_EXTENDED
+    ? ['corner', 'ackermann_reverse', 'ackermann_corner', 'narrow_road:rrt_connect', 'narrow_road:voronoi']
+    : ['corner', 'ackermann_reverse'];
+  for (const name of cases) {
     if (name !== 'corner') {
-      const data = JSON.parse(await readFile(new URL(`../pyrobo/apps/scenes/eb_dwa_${name}.json`, import.meta.url)));
+      const generation = states.at(-1).generation;
+      const [scene, planner] = name.split(':');
+      const data = JSON.parse(await readFile(new URL(`../pyrobo/apps/scenes/eb_dwa_${scene}.json`, import.meta.url)));
       data.config.eb_dwa = {time_budget_s: null};
+      if (planner) data.config.backend.planner = planner;
       await page.locator('#import-file').setInputFiles({name: `${name}.json`, mimeType: 'application/json',
         buffer: Buffer.from(JSON.stringify(data))});
       await page.waitForFunction(() => document.querySelector('#message').textContent === '场景已导入并重置。');
+      // Repeated imports share the same message text. Wait for the backend's
+      // new episode before sending AUTO, otherwise the reset can erase it.
+      const deadline = Date.now()+10000;
+      while (states.at(-1)?.generation === generation && Date.now() < deadline)
+        await page.waitForTimeout(50);
+      assert.ok(states.at(-1).generation > generation);
     }
     await page.locator('[data-action="auto"]').click();
     await page.waitForFunction(() => document.querySelector('#diagnostics').textContent.includes('EB '));
     await page.screenshot({path: `${artifacts}/${name}-running.png`, fullPage: true});
     await page.waitForFunction(() => document.querySelector('#diagnostics').textContent.startsWith('arrived'),
-      {}, {timeout: 120000});
+      {}, {timeout: 240000});
     const final = states.at(-1);
     assert.equal(final.optimizer, 'eb_dwa');
     assert.ok(final.safe && !final.collided && !final.fault);
@@ -69,6 +88,7 @@ try {
   await mobile.goto(base);
   await mobile.waitForFunction(() => document.querySelector('#connection').textContent === '已连接');
   await mobile.locator('#local-optimizer').selectOption('eb_dwa');
+  assert.equal(await mobile.locator('#eb-budget').inputValue(), '');
   assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= 390));
   await mobile.screenshot({path: `${artifacts}/mobile.png`, fullPage: true});
   const moving = states.filter(s => s.mode === 'auto' && s.candidates > 0);

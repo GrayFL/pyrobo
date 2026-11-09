@@ -10,7 +10,7 @@ flowchart LR
     TeleopAdapter --> Supervisor
     Navigator[Navigator 目标与路径进度] --> Supervisor
     Supervisor --> Request[唯一有效 MotionRequest]
-    Request --> Optimizer[LocalMotionOptimizer / DWAEngine / TimedElasticBand]
+    Request --> Optimizer[LocalMotionOptimizer / DWAEngine / TimedElasticBand / ElasticBandDWA]
     Optimizer --> SafetyGuard
     SafetyGuard --> Native[模型原生命令]
     Native --> Simulator[Simulator / 底盘接口]
@@ -25,6 +25,7 @@ flowchart LR
 | `geometry` | 原始点云的空间索引、矩形距离、连续扫掠；不判断控制模式 |
 | `planning` | `GlobalPlanner`，RRT-Connect、Voronoi + D* Lite |
 | `control.dwa` | 采样、批量预测、硬掩码、代价和选优；三个策略共用同一流水线 |
+| `control.teb` / `control.eb_dwa` | 可选局部优化器；分别优化时序 band 或局部 XY 几何，复用模型与安全检查 |
 | `navigation` | 目标、全局路径缓存、可回退进度、重规划和到达条件 |
 | `teleop` | 将外部输入转为有期限的期望；阿克曼低速时保留明确的转向意图 |
 | `runtime` | 输入来源权限、AUTO/MANUAL/PAUSED/ESTOP、超时和控制权 |
@@ -67,6 +68,8 @@ runtime.set_mode(ControlMode.AUTO)  # 不重置速度、转角、加速度或历
 
 `controller=TEBConfig(...)` 在装配入口选择 `TimedElasticBand`。其稀疏位姿/时间求解位于 `control/teb`；导航策略、模型原生命令映射、有限力批量预测、矩形扫掠及最终安全门复用既有实现。导航只验证由 band 推导的少量参考，不调用 DWA 的采样搜索；手动辅助显式委托 DWA。优化 band 与可执行 plant 轨迹分开，详见 [TEB](../pyrobo/control/teb/README.md)。
 
+`controller=EBDWAConfig(...)` 选择 `ElasticBandDWA`。独立 EB 修复局部 XY 几何，输出弧长、切线、曲率和软走廊；共享 DWA 通过可选 `score_rollout` 对完整物理轨迹做空间评分。速度参考也调用共享预测器，不能改变碰撞或制动硬掩码。`repairs_global_path` / `consume_replan_request()` 允许优化器先尝试局部修复，失败后停车并请求上层搜索；原始全局路线保留。命令平滑只读取实际执行反馈，缺失时关闭该项。接口和预算见 [EB-DWA](../pyrobo/control/eb_dwa/README.md)。
+
 `NavigationConfig.goal_approach_distance` 可独立设置阿克曼终点沿目标朝向的直线入射长度（m）。`None` 沿用车型根据前视与转弯半径计算的默认值，正数显式指定长度，`0` 关闭该入射段；差速车型不添加入射段。显式长度仍通过相同的矩形扫掠碰撞检查，缩短长度不保证任意停车姿态可达。全局规划器 `clearance` 是额外规划间距，会叠加在 `Footprint.margin` 与点半径之外；窄道应分别配置这两种边距。
 
 ## 三种策略的硬约束
@@ -86,6 +89,8 @@ runtime.set_mode(ControlMode.AUTO)  # 不重置速度、转角、加速度或历
 ## 批量数据与可达性
 
 热路径保留 `search: (N,U_search)`、`native: (N,U_native)`、`states: (N,T,S)`、`masks/costs: (N,)`。差速搜索 `(v,ω)`，一次映射到左右轮速；阿克曼搜索 `(v,δ)`。只有获选的一行转换为命令对象和 graphmap 时序轨迹。`StateCodec` 定义状态列；控制和碰撞层只取 codec 提供的位姿与速度视图。
+
+`BatchPredictor.predict` 的初始状态可为 `(S,)`、广播的 `(1,S)`，或与命令逐行对应的 `(N,S)`。后者供 EB 速度响应表批量测试不同初始速度/转向状态；仍调用同一积分器和制动检查，单状态输入语义不变。
 
 `ReachabilityEstimator.state_envelope()` 使用真实 `integrate(..., mode='track')` 试探，包含伺服、jerk、被动阻力与力预算。这是**经验响应范围**，`strict_outer_bound=False`，不能用作拒绝候选的严格外包络。`command_window()` 保留模型和意图允许的完整命令范围，用响应代表点补充采样锚点；估计失败保留搜索域并报告 `window_fallback`。高目标值可能无法在一周期达到，却仍是有用的饱和驱动命令。
 

@@ -25,7 +25,11 @@ class BatchPredictor:
 
     def predict(self, state, commands, dt, *, stop_only=False, mode='track', diagnostics=False):
         count = len(commands)
-        values = np.broadcast_to(state, (count, len(state))).copy()
+        state = np.asarray(state, dtype=float)
+        if (state.ndim not in (1, 2) or not state.shape[-1] or not np.isfinite(state).all() or
+                (state.ndim == 2 and state.shape[0] not in (1, count))):
+            raise ValueError('initial state must be finite (S,), (1,S), or one (N,S) row per command')
+        values = np.broadcast_to(state, (count, state.shape[-1])).copy()
         trajectory, sweep, times = [values.copy()], [np.zeros(count)], [0.]
         valid = [np.ones(count, dtype=bool)]
         active = np.ones(count, dtype=bool)

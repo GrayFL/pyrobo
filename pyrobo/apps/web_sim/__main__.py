@@ -15,9 +15,11 @@ def main():
     if not 1 <= args.port <= 65535 or not 1 <= args.max_clients <= 32:
         parser.error('port must be 1–65535, max-clients must be 1–32')
     import uvicorn
-    from .scene import Scene
+    from .storage import load_scene_file
+    from pyrobo.apps.sim_common.catalog import discover
+    discover()
     from .server import create_app
-    scene = Scene.model_validate_json(args.scene.read_bytes()) if args.scene else None
+    scene = load_scene_file(args.scene) if args.scene else None
     app = create_app(scenes_dir=args.scenes_dir, initial_scene=scene, max_clients=args.max_clients)
     print(f'Local: http://127.0.0.1:{args.port}', flush=True)
     if args.host == '0.0.0.0':

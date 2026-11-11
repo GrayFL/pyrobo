@@ -5,6 +5,10 @@ from ...core.commands import AckermannCommand, Mode
 from ...core.state import Twist2D
 from ...core.geometry import positive
 
+from pyrobo.registry import register_kinematic_model
+
+
+@register_kinematic_model('ackermann', label='阿克曼', family='ackermann')
 @dataclass(frozen=True)
 class Ackermann:
     """Bicycle model about the rear axle midpoint, including reverse motion."""

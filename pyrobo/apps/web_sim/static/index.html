@@ -63,9 +63,14 @@
           <button data-tool="brush"><b>〰</b>自由画墙</button>
           <button data-tool="polyline"><b>⌁</b>折线墙</button>
           <button data-tool="polygon"><b>⬠</b>多边形</button>
+          <button data-tool="classify"><b>◐</b>切换已知/未知</button>
           <button data-tool="erase"><b>⌫</b>删除障碍</button>
           <button data-tool="pan"><b>✥</b>移动视图</button>
         </div>
+        <label>新障碍类型<select id="obstacle-layer"><option value="known">已知地形</option><option value="unknown">未知障碍 · 雷达发现</option></select></label>
+        <label>雷达量程 · m<input id="lidar-range" type="number" min="0.1" max="50" step="0.5" /></label>
+        <label>雷达束数<input id="lidar-beams" type="number" min="16" max="1440" step="1" /></label>
+        <p class="help">橙色为仿真中的未知实体，蓝点为当前扫描回波；规划器仅能看到回波。点击「切换已知/未知」可转换已有障碍。</p>
         <button id="finish-polygon" hidden>完成多边形 ↵</button>
         <label
           >墙体宽度 <span class="unit">m</span
@@ -116,6 +121,9 @@
           ><span><i style="background: #9670c7"></i>EB 参考</span
           ><span><i class="forecast"></i>局部预测</span
           ><span><i class="trail"></i>行驶轨迹</span
+          ><span title="位姿参考点；差速原地旋转时此点不动">⊕ 驱动轴心</span
+          ><span style="color: #9a4e80">● 车体几何中心</span
+          ><span>浅色虚线：初始车位</span
           ><span id="coordinates">X — / Y —</span>
         </div>
         <div id="message" role="status">
@@ -167,17 +175,12 @@
         </label>
         <div class="paired">
           <label
-            >全局规划<select id="planner">
-              <option value="rrt_connect">RRT-Connect</option>
-              <option value="voronoi">Voronoi + D* Lite</option>
-            </select></label
+            >全局规划<select id="planner"></select></label
           ><label
-            >运动模型<select id="model">
-              <option value="differential">差速</option>
-              <option value="ackermann">阿克曼</option>
-            </select></label
+            >运动模型<select id="model"></select></label
           >
         </div>
+        <label>车体模板<select id="vehicle-template"></select></label>
         <div class="paired">
           <label
             >车长 · m<input
@@ -189,11 +192,10 @@
             >车宽 · m<input id="body-width" type="number" min="0.05" step="0.1"
           /></label>
         </div>
-        <label>局部规划<select id="local-optimizer">
-          <option value="dwa">DWA · 动态窗口</option>
-          <option value="teb">TEB · 时间弹性带</option>
-          <option value="eb_dwa">EB-DWA · 几何修复与动态窗口</option>
-        </select></label>
+        <label>车体安全边距 · m<input id="body-margin" type="number" min="0" step="0.01" /></label>
+        <label>车体中心相对驱动轴 · m<input id="body-offset" type="number" step="0.01" /></label>
+        <label>局部规划<select id="local-optimizer"></select></label>
+        <p class="help">局部规划算法与车体独立：切换算法保留当前车型、尺寸和中心偏移。ref / towing 均支持差速与阿克曼。</p>
         <div id="teb-settings" hidden>
           <div class="paired">
             <label>TEB 最大节点<input id="teb-nodes" type="number" min="3" max="64" step="1" /></label>
@@ -340,12 +342,28 @@
     </main>
     <dialog id="library">
       <div class="dialog-heading">
-        <h2>场景库</h2>
+        <h2>场景与地形管理</h2>
         <button id="library-close">关闭</button>
       </div>
-      <p class="help">
-        保存在运行服务的设备上，局域网中的其他设备也能加载。每次保存创建一个新用例。
-      </p>
+      <p class="help">地形单独保存；场景引用地形并保存车位、车辆、导航参数与未知障碍。目录位于运行服务的设备上。</p>
+      <div class="paired">
+        <label>资源类型<select id="resource-kind"><option value="scenes">场景</option><option value="maps">地形</option></select></label>
+        <label>分类目录<select id="library-folder"></select></label>
+      </div>
+      <p id="folder-path" class="help"></p>
+      <details><summary>管理分类目录</summary>
+        <label>分类名称<input id="folder-name" maxlength="80" /></label>
+        <label>服务器文件夹路径（留空则创建分类文件夹）<input id="folder-location" placeholder="例如 /data/robot-scenes/仓库" /></label>
+        <div class="paired"><button id="folder-add">添加目录</button><button id="folder-remove">移除目录登记</button></div>
+        <p class="help">移除登记保留磁盘文件；原厂目录只读，编辑后可另存到用户目录。</p>
+      </details>
+      <div class="library-save">
+        <label>保存名称<input id="resource-name" maxlength="80" placeholder="请输入名称" /></label>
+        <label id="terrain-name-row">场景引用的地形名<input id="terrain-name" maxlength="80" placeholder="请输入地形名称" /></label>
+        <div class="paired"><button id="resource-save" class="primary">保存为新资源</button><button id="resource-overwrite">覆盖已加载资源</button><button id="resource-export">导出当前资源</button></div>
+        <p class="help">同目录同名会提示，不会生成随机文件名。修改共享地形后，请先在「地形」中覆盖保存，再保存场景。</p>
+      </div>
+      <p id="library-message" role="status"></p>
       <div id="scene-list"></div>
     </dialog>
   </body>

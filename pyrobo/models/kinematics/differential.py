@@ -5,6 +5,10 @@ from ...core.commands import WheelCommand, Mode
 from ...core.state import Twist2D
 from ...core.geometry import positive
 
+from pyrobo.registry import register_kinematic_model
+
+
+@register_kinematic_model('differential', label='差速', family='differential')
 @dataclass(frozen=True)
 class DifferentialDrive:
     track: float = 0.4

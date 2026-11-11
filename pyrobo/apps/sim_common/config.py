@@ -6,9 +6,9 @@ import tomllib
 
 import numpy as np
 
-from pyrobo import (Ackermann, DifferentialDrive, DWAConfig, TEBConfig, EBDWAConfig, DynamicsConfig, Drag, Footprint,
-                    NavigationConfig, RRTConnectConfig, SafetyConfig, VoronoiConfig)
+from pyrobo import (Ackermann, DynamicsConfig, Drag, Footprint, NavigationConfig, SafetyConfig)
 from pyrobo.core import Bounds2D, pose2d
+from pyrobo.registry import LOCAL_OPTIMIZERS, GLOBAL_PLANNERS, KINEMATIC_MODELS
 from pyrobo.simulation import Box, World2D, demo_world
 
 DEFAULTS = {
@@ -17,8 +17,10 @@ DEFAULTS = {
     'backend': {'planner': 'rrt_connect', 'model': 'differential', 'local_optimizer': 'dwa',
                 'adaptive_clearance': True},
     'map': {'preset': 'detour'},
-    'footprint': {}, 'differential': {}, 'ackermann': {}, 'dynamics': {},
-    'dwa': {}, 'teb': {}, 'eb_dwa': {}, 'rrt_connect': {}, 'voronoi': {}, 'navigation': {}, 'safety': {},
+    'footprint': {}, 'dynamics': {},
+    **{name: {} for name in KINEMATIC_MODELS},
+    **{name: {} for name in LOCAL_OPTIMIZERS},
+    **{name: {} for name in GLOBAL_PLANNERS}, 'navigation': {}, 'safety': {},
     'teleop': {'policy': 'teleop_stop', 'speed_limit': .6, 'turn_limit': 0., 'ttl': .3,
                'max_turn_deviation': .8, 'max_lateral_deviation': .8, 'max_heading_deviation': 1.2},
     'joystick': {'enabled': True, 'device_index': 0, 'throttle_axis': 1, 'turn_axis': 0,
@@ -91,16 +93,18 @@ def make_world(config):
 
 def controller_parameters(config, name=None):
     name = name or config['backend']['local_optimizer']
-    lookahead = 'track_lookahead_m' if name == 'eb_dwa' else 'lookahead'
-    defaults = {} if config['backend']['model'] == 'differential' else {'prediction_time': 2.4, lookahead: 1.6}
-    cls = {'dwa': DWAConfig, 'teb': TEBConfig, 'eb_dwa': EBDWAConfig}[name]
-    return parameters(cls, {**defaults, **config[name]}, name)
+    lookahead = 'track_lookahead_m' if LOCAL_OPTIMIZERS[name].family == 'eb_dwa' else 'lookahead'
+    cls = LOCAL_OPTIMIZERS[name].config
+    defaults = ({'prediction_time': 2.4, lookahead: 1.6}
+                if KINEMATIC_MODELS[config['backend']['model']].family == 'ackermann' else {})
+    defaults = {k: v for k, v in defaults.items() if k in {f.name for f in fields(cls)}}
+    return parameters(cls, {**defaults, **config.get(name, {})}, name)
 
 
 def build_parameters(config):
     """Only this example's composition root selects concrete implementations."""
     backend = config['backend']
-    model = parameters(DifferentialDrive if backend['model'] == 'differential' else Ackermann,
+    model = parameters(KINEMATIC_MODELS[backend['model']].config,
                        config[backend['model']], backend['model'])
     footprint = parameters(Footprint, config['footprint'], 'footprint')
     dynamics = dict(config['dynamics'])
@@ -110,24 +114,34 @@ def build_parameters(config):
     dynamics = parameters(DynamicsConfig, dynamics, 'dynamics')
     controller = controller_parameters(config)
     clearance = .12 + (.4 * model.minimum_turn_radius if isinstance(model, Ackermann) else 0.)
-    planner_cls = RRTConnectConfig if backend['planner'] == 'rrt_connect' else VoronoiConfig
-    budget = .5 if backend['planner'] == 'rrt_connect' else 2.
-    planner = parameters(planner_cls, {'clearance': clearance, 'time_budget': budget, **config[backend['planner']]},
+    spec = GLOBAL_PLANNERS[backend['planner']]
+    defaults = {'clearance': clearance, **dict(spec.defaults)}
+    defaults = {k: v for k, v in defaults.items() if k in {f.name for f in fields(spec.config)}}
+    planner = parameters(spec.config, {**defaults, **config[backend['planner']]},
                          backend['planner'])
     safety = parameters(SafetyConfig, config['safety'], 'safety')
     return model, footprint, dynamics, controller, planner, safety
 
 
+def default_config():
+    result = deepcopy(DEFAULTS)
+    for registry in (LOCAL_OPTIMIZERS, GLOBAL_PLANNERS, KINEMATIC_MODELS):
+        for name in registry:
+            result.setdefault(name, {})
+    return result
+
+
 def validate(config):
-    known_keys(config, DEFAULTS, 'root')
+    config = merge(default_config(), config)
+    known_keys(config, default_config(), 'root')
     for section in ('app', 'backend', 'teleop', 'joystick'):
         known_keys(config[section], DEFAULTS[section], section)
     known_keys(config['map'], ('preset', 'bounds', 'boxes', 'start', 'goal'), 'map')
     backend, app, teleop, joystick = (config[key] for key in ('backend', 'app', 'teleop', 'joystick'))
     if not isinstance(backend['adaptive_clearance'], bool):
         raise ValueError('backend.adaptive_clearance must be boolean')
-    for key, choices in (('model', ('differential', 'ackermann')), ('planner', ('rrt_connect', 'voronoi')),
-                         ('local_optimizer', ('dwa', 'teb', 'eb_dwa'))):
+    for key, choices in (('model', tuple(KINEMATIC_MODELS)), ('planner', tuple(GLOBAL_PLANNERS)),
+                         ('local_optimizer', tuple(LOCAL_OPTIMIZERS))):
         if backend[key] not in choices:
             raise ValueError(f'backend.{key} must be one of {choices}')
     for key, minimum in (('width', 1000), ('height', 720), ('fps', 1), ('trail_length', 2)):
@@ -152,15 +166,15 @@ def validate(config):
     if joystick['deadzone'] >= 1:
         raise ValueError('joystick.deadzone must be < 1')
     # Check inactive backend tables too, so switching a CLI selector is predictable.
-    for cls, key in ((DifferentialDrive, 'differential'), (Ackermann, 'ackermann'),
-                     (RRTConnectConfig, 'rrt_connect'), (VoronoiConfig, 'voronoi'),
-                     (NavigationConfig, 'navigation')):
-        parameters(cls, config[key], key)
-    for name in ('dwa', 'teb', 'eb_dwa'):
+    for registry in (KINEMATIC_MODELS, GLOBAL_PLANNERS):
+        for key, spec in registry.items():
+            parameters(spec.config, config[key], key)
+    parameters(NavigationConfig, config['navigation'], 'navigation')
+    for name in LOCAL_OPTIMIZERS:
         controller_parameters(config, name)
     model, footprint, dynamics, controller, planner, safety = build_parameters(config)
     dt = app['dt']
-    if dt > min(controller.prediction_time, controller_parameters(config, 'dwa').prediction_time,
+    if dt > min(getattr(controller, 'prediction_time', safety.max_control_dt), controller_parameters(config, 'dwa').prediction_time,
                 dynamics.timeout, safety.max_control_dt, teleop['ttl']) + 1e-9:
         raise ValueError('app.dt exceeds prediction horizon, watchdog, safety period or teleop TTL')
     if safety.expected_dt is not None and not np.isclose(dt, safety.expected_dt, rtol=0, atol=1e-9):
@@ -178,7 +192,7 @@ def load_config(path=None, overrides=(), selectors=None):
     if path:
         with Path(path).open('rb') as stream:
             data = tomllib.load(stream)
-    config = merge(DEFAULTS, data)
+    config = merge(default_config(), data)
     for key, value in (selectors or {}).items():
         if value is not None:
             section, name = key.split('.')
@@ -188,7 +202,7 @@ def load_config(path=None, overrides=(), selectors=None):
             raise ValueError('--set expects section.key=TOML_VALUE')
         key, raw = assignment.split('=', 1)
         parts = key.strip().split('.')
-        if len(parts) < 2 or parts[0] not in DEFAULTS or any(not p.isidentifier() for p in parts):
+        if len(parts) < 2 or parts[0] not in default_config() or any(not p.isidentifier() for p in parts):
             raise ValueError(f'invalid setting path: {key}')
         value = tomllib.loads(f'value = {raw}')['value']
         target = config

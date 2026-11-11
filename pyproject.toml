@@ -27,7 +27,7 @@ include = ["pyrobo*"]
 
 [tool.setuptools.package-data]
 "*" = ["README.md"]
-"pyrobo.apps" = ["configs/*.toml", "scenes/*.json"]
+"pyrobo.apps" = ["configs/*.toml", "scenes/*.json", "scenes/maps/*.json"]
 "pyrobo.apps.web_sim" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]

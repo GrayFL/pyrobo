@@ -6,11 +6,12 @@ from time import monotonic, perf_counter
 
 import numpy as np
 
-from pyrobo import (ChassisDynamics, ControlMode, DWAEngine, TimedElasticBand, ElasticBandDWA, MotionPolicy, NavigationConfig,
+from pyrobo import (ChassisDynamics, ControlMode, MotionPolicy, NavigationConfig,
                     Navigator, RobotObservation, SafetyGuard, Supervisor, TeleopAdapter, Twist2D, pose2d)
 from pyrobo.core.geometry import planar_state
+from pyrobo.registry import LOCAL_OPTIMIZERS, GLOBAL_PLANNERS
 from pyrobo.geometry.cache import SnapshotIndex
-from pyrobo.planning import AdaptiveClearancePlanner, RRTConnect, VoronoiPlanner
+from pyrobo.planning import AdaptiveClearancePlanner
 from pyrobo.simulation import Simulator2D
 from .config import build_parameters, controller_parameters, make_world, parameters
 
@@ -68,15 +69,17 @@ class Session:
         self.model, self.footprint = model, footprint
         self.cloud = self.world.point_cloud(config['app']['point_spacing'])
         plant, index = ChassisDynamics(model, dynamics), SnapshotIndex()
-        factory = {'dwa': DWAEngine, 'teb': TimedElasticBand, 'eb_dwa': ElasticBandDWA}[config['backend']['local_optimizer']]
-        options = {'teleop_config': controller_parameters(config, 'dwa')} if factory is not DWAEngine else {}
+        spec = LOCAL_OPTIMIZERS[config['backend']['local_optimizer']]
+        factory = spec.factory
+        options = ({'teleop_config': controller_parameters(config, 'dwa')}
+                   if spec.teleop_config else {})
         optimizer = factory(controller, footprint, model=model, dynamics=plant, index=index, input_limits=safety, **options)
-        factory = RRTConnect if config['backend']['planner'] == 'rrt_connect' else VoronoiPlanner
+        factory = GLOBAL_PLANNERS[config['backend']['planner']].factory
         global_planner = (AdaptiveClearancePlanner(factory, planner, footprint) if config['backend']['adaptive_clearance']
                           else factory(planner, footprint))
         gate = SafetyGuard(plant, optimizer.command_space, footprint, index=index, config=safety)
         settings = parameters(NavigationConfig, {
-            'lookahead': controller.lookahead, 'goal_tolerance': controller.goal_tolerance, 'yaw_tolerance': controller.yaw_tolerance,
+            **{key: getattr(controller, key) for key in ('lookahead', 'goal_tolerance', 'yaw_tolerance') if hasattr(controller, key)},
             **config['navigation']}, 'navigation')
         self.nav = Navigator(model=model, footprint=footprint, dynamics=plant, global_planner=global_planner,
                              local_optimizer=optimizer, settings=settings, index=index, safety=gate,

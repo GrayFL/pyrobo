@@ -2,7 +2,7 @@
 
 面向机器人运动控制的 Python 库：全局导航 / 手动意图 → 控制权管理 → DWA / TEB / EB-DWA 局部导航 → 独立安全门 → 力驱动底盘。算法与 ROS、GUI、绘图库解耦，公共位姿统一使用 `graphmap.pose.Pose` / `PoseArray`。
 
-- **矩形车体**：任意长宽、朝向和纵向参考点偏移；提供 0.5 × 0.5 m、1 × 0.5 m 两个版型。全局规划、局部预测、路径验证和实体仿真都检查矩形。
+- **矩形车体**：任意长宽、朝向和纵向参考点偏移；Web 提供 0.5 × 0.5 m 小车、长0.79 × 宽0.54 m 牵引车及长车体模板，也可自定义。全局规划、局部预测、路径验证和实体仿真都检查矩形。
 - **RRT-Connect** 与 **Voronoi + D* Lite**：直接在点云上生成有序航点，不默认栅格化或降采样。
 - **差速 / 阿克曼**：差速可原地旋转；阿克曼的偏航由车速和实际转角决定，支持倒车。
 - **TEB 局部导航**：稀疏优化位姿与时间，复用上一周期轨迹，接入相同矩形几何、车辆模型与有限力安全验证；DWA 仍为默认算法。
@@ -129,7 +129,14 @@ python -m pyrobo.apps.web_sim --host 0.0.0.0 --port 8000
 python -m pyrobo.apps.web_sim.replay pyrobo/apps/scenes/polygon_corridor.json --steps 700
 ```
 
+Web 算法与车型选项从装饰器注册表自动发现；车辆模板独立于算法。统一管理器支持命名、分类目录、重名提示、覆盖和删除。地形单独存储，场景引用地形并保存车辆、车位和导航配置；未知障碍只在雷达实际扫描到后进入导航点云。旧场景仍可导入。
+
 详见 [Web 运动实验室说明](pyrobo/apps/web_sim/README.md)。页面无需 Node 构建或外部 CDN，FastAPI / Uvicorn 不进入核心算法依赖。
+
+手动开发局部规划器可选择 Web 中的 `ref_dwa` / `ref_teb`（经典结构的最小实现）和独立克隆的
+`towing_dwa` / `towing_teb`。四者都支持差速与阿克曼，车型、车体尺寸和中心偏移独立设置，
+切换算法保留当前车体配置。四者分别保存算法参数，原有算法继续可用。
+目标函数位置、输入输出及调用示例见[局部规划开发接口](pyrobo/control/README.md)。
 
 交互例程默认将全局额外间距作为首选值自动适配，保留矩形、碰撞 margin 和点半径；页面可切换为固定硬间距。阿克曼终点入射距离留空时根据可用空间自动选择。可用[窄道回归场景](pyrobo/apps/scenes/narrow_ackermann_adaptive.json)测试两个全局规划器，算法语义见[规划组合说明](pyrobo/planning/README.md)。
 
@@ -157,7 +164,7 @@ python -m pyrobo.simulation --model differential --scenario handoff
 python -m pyrobo.simulation --model ackermann --scenario handoff --plot /tmp/pyrobo-handoff.png
 python -m examples.manual_control
 python -m examples.assisted_teleop --model both
-python -m pytest -q
+python scripts/test.py quick
 ```
 
 `detour` 展示交错墙绕行、两种全局规划器及两种车体。`handoff` 在导航中插入三秒手动倒车，再交回 DWA，展示路径进度回退；`manual_control` 展示速度话题适配、滑行、倒车和急停。`--plot` 保存路径、矩形车体、实测速度、转角、进度和力 / 力矩图。失败例程以非零退出码结束。
@@ -228,3 +235,16 @@ python -m pyrobo.apps.lockstep_navigation --execution process --episodes 2 --out
 完整交互工具现位于 `pyrobo.apps.pygame_sim`、`pyrobo.apps.web_sim`，
 配置、Web 静态资源及小型回归场景随包管理。旧 examples 入口只做兼容委托；
 导航基准工具位于 `benchmarks/navigation`。无须从仓库根目录启动包内应用。
+
+## 按改动范围测试
+
+```bash
+python scripts/test.py quick                         # 快速契约与基础几何
+python scripts/test.py related --area web-ui          # 页面改动，不重复导航长闭环
+python scripts/test.py related --area web --area registry
+python scripts/test.py related --base HEAD --list     # 查看 Git 改动关联范围
+python scripts/test.py related                       # 自动按改动模块选取
+python scripts/test.py full                          # 发布或跨层重构
+```
+
+`quick` 用于日常反馈，`related` 包含相关模块的完整测试（含必要闭环），`full` 和直接 `python -m pytest` 仍运行全部测试。仅文档改动不启动 pytest，未知/基础模块改动保守选择全量；已有未提交改动较多时可用 `--area` 明确本次范围。纯文案不新增测试；页面改动补对应浏览器检查，CLI 改动补实际运行。RSim/MuJoCo 集成只在相关修改或全量档运行，不为一次样式或目录修改重复执行。已有数值、安全和闭环断言保留，测试分档不等于削弱安全检查。

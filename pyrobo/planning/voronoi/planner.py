@@ -44,6 +44,10 @@ class _BudgetExhausted(Exception):
     pass
 
 
+from pyrobo.registry import register_global_planner
+
+
+@register_global_planner('voronoi', config=VoronoiConfig, label='Voronoi + D* Lite', family='', defaults=(("time_budget", 2.),))
 class VoronoiPlanner:
     """Cache one roadmap; rebuild on obstacle/goal/bounds/frame changes.
 

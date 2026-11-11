@@ -14,6 +14,10 @@ from .band import segment_motion, solve_band
 from .config import TEBConfig
 
 
+from pyrobo.registry import register_local_optimizer
+
+
+@register_local_optimizer('teb', config=TEBConfig, label='TEB · 时间弹性带', family='teb', teleop_config=True)
 class TimedElasticBand:
     """LocalMotionOptimizer for differential and Ackermann vehicles.
 

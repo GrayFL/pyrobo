@@ -1,3 +1,4 @@
+import { saveThroughLibrary } from './browser_library_helpers.mjs';
 // Opt-in real Edge/Chromium test of the same portable experiments as CLI replay.
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -19,6 +20,7 @@ try {
   await page.goto(base);
   await page.waitForFunction(() => document.querySelector('#connection').textContent === '已连接');
   await page.locator('#library-open').click();
+  await page.locator('#library-folder').selectOption('builtin');
   const row = page.locator('.scene-item').filter({hasText: 'EB-DWA · 长直道与直角'});
   await row.waitFor();
   assert.equal(await row.count(), 1);
@@ -45,8 +47,7 @@ try {
   assert.equal(exported.config.eb_dwa.speed_profile, true);
   assert.equal(exported.config.eb_dwa.speed_lateral_fraction, .3);
   assert.deepEqual(exported.experiment.reference_path, [[0, 0], [5, 0], [5, 5]]);
-  await page.locator('#save').click();
-  await page.waitForFunction(() => document.querySelector('#message').textContent.startsWith('已保存'));
+  await saveThroughLibrary(page);
   const cases = process.env.EB_BROWSER_EXTENDED
     ? ['corner', 'ackermann_reverse', 'ackermann_corner', 'narrow_road:rrt_connect', 'narrow_road:voronoi']
     : ['corner', 'ackermann_reverse'];

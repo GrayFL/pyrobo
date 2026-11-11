@@ -8,6 +8,7 @@ import numpy as np
 
 from pyrobo.apps.sim_common.session import Action
 from .scene import Scene, SceneSession
+from .storage import load_scene_file
 
 
 def replay(scene, steps=None, *, on_step=None):
@@ -73,6 +74,8 @@ def replay(scene, steps=None, *, on_step=None):
 
 
 def main():
+    from pyrobo.apps.sim_common.catalog import discover
+    discover()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('scene', type=Path, nargs='+')
     parser.add_argument('--steps', type=int, help='override experiment.max_steps (ordinary scenes default to 700)')
@@ -83,7 +86,7 @@ def main():
     results = []
     for path in args.scene:
         try:
-            results.append(replay(Scene.model_validate_json(path.read_bytes()), args.steps))
+            results.append(replay(load_scene_file(path), args.steps))
         except (ValueError, TypeError, OSError) as error:
             results.append({'file': str(path), 'arrived': False, 'error': str(error)})
     output = json.dumps(results, ensure_ascii=False, indent=2, allow_nan=False)

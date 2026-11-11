@@ -1,5 +1,30 @@
 # Web 运动实验室
 
+## 局部规划算法开发基线
+
+「局部规划」额外提供 `ref_dwa`、`ref_teb`、`towing_dwa`、`towing_teb`。
+这四项使用经典基础目标函数，代码与旧 DWA/TEB 的导航策略独立；
+核心函数、资料来源和输入输出说明见[局部规划开发接口](../../control/README.md)。
+各目录独立实现 `config/controller/optimizer`，不依赖通用算法适配基类。
+新 TEB 的局部预测显示本周期首段命令执行及制动；完整优化 band 留在控制器 `last_band`，
+不将首段速度恒定外推整个规划时域来评估 band。
+
+- 四者均支持差速与阿克曼，算法不绑定车体形状。车型、长宽、中心偏移及物理参数独立设置。
+- 切换算法保留当前车体配置；未提供几何参数时统一使用 `Footprint()` 默认值。
+- 四者各有同名配置表，TEB 面板及预测时长编辑当前算法。新 TEB 默认预算留空，仅限制求解次数。
+- 选择后点「应用并重置」再导航。修改 Python 核心函数后需重启后端、刷新页面；修改参数只需应用。
+- 加载场景保留其明确保存的车型和尺寸；例如长 0.79 m、宽 0.54 m、中心偏移 −0.295 m
+  的车体可搭配任一算法。
+
+`tests/browser_reference_optimizers.mjs` 检查四个入口、切换算法保留车体、towing 阿克曼导航、
+参数隔离、保存/导入/导出、空场地闭环到达及 390px 手机布局，运行方式与其他浏览器专项相同。
+源码自动重载的启动命令见[开发接口文档](../../control/README.md#车体与-web-测试)。
+
+车体上的 `⊕` 标记为驱动轴中点（公共位姿原点），紫色点为几何中心，浅色虚线车体为初始车位。
+差速车从静止按 A/D 原地旋转时，轴心坐标不变，几何中心按 `abs(offset_x)` 半径绕轴心运动；
+`offset_x=-0.295` 时半径为0.295 m。`tests/browser_rotation_center.mjs` 使用真实 A/D 输入，
+同时检查服务器位姿和实际绘制的矩形顶点，避免仅凭示意轮子位置判断旋转中心。
+
 FastAPI + Uvicorn 提供页面、场景库和 WebSocket；浏览器用 Canvas 绘图，不需要 Node 构建、CDN 或 pygame。每个浏览器窗口独立运行一辆车，局域网设备共享保存的场景库。
 
 「局部规划」支持 DWA、TEB、EB-DWA。EB-DWA 显示紫色几何参考及淡紫色软跟踪走廊，绿色仍为共享有限力模型的实际候选预测；软走廊不代替矩形碰撞检查。可调期望净空、跟踪前视、节点/迭代/软时间预算、提前减速开关及横向加速度使用比例，完整参数保存在 `config.eb_dwa`。详细诊断包含几何失败原因、复用情况、活动节点、参考速度及 EB/DWA 分项耗时。
@@ -74,22 +99,50 @@ USB 手柄采用浏览器 Gamepad API，默认轴 1 / 0、按钮 0 使能，完�
 
 ## 参数与场景保存
 
-`backend.local_optimizer` 为 `dwa`（默认）或 `teb`，各自保存参数；「预测时长」只修改当前算法。TEB 默认预测 2.4 s，可设置节点数、迭代上限和优化软预算，预算留空为仅限制次数。Web 上限为 64 节点、100 次主评估及 1 s 预算，并检查物理预测工作量。手动辅助继续读取 `dwa` 参数。旧 schema_version=1 场景可直接加载，保存时补全 `teb` 默认值。诊断显示实际算法、节点数、求解状态、残差调用数、代价及是否复用轨迹。详见 [TEB 算法说明](../../control/teb/README.md)。
+`backend.local_optimizer` 从注册表选择（默认 `dwa`），各自保存参数；「预测时长」只修改当前算法。TEB 默认预测 2.4 s，可设置节点数、迭代上限和优化软预算，预算留空为仅限制次数。Web 上限为 64 节点、100 次主评估及 1 s 预算，并检查物理预测工作量。手动辅助继续读取 `dwa` 参数。旧 schema_version=1 场景可直接加载，新保存使用 v2 文件与独立地形，补全已注册算法默认值。诊断显示实际算法、节点数、求解状态、残差调用数、代价及是否复用轨迹。详见 [TEB 算法说明](../../control/teb/README.md)。
 
 右侧可直接调整常用参数。「完整参数 JSON」提供所有车型、动力学、DWA、TEB、全局规划器、导航、安全门及手柄参数，编辑后点击「更新参数草稿」，校验通过再应用。`app.width` / `height` / `fps` 是与 Pygame 共用的配置字段；网页尺寸由浏览器决定。
 
-切换车型时，界面自动选择对应预测时长 / 前视距离与全局转弯余量：差速 1.8 s / 1.3 m，阿克曼 2.4 s / 1.6 m；需要其他值可继续编辑。RRT / Voronoi 的默认软预算为 0.5 s / 2 s。算法仍为 XY 全局规划，复杂阿克曼场景可能因为转弯空间不足而不能到达，诊断状态会保留。
+切换车型时，界面使用后端目录中的对应预测时长 / 前视距离与全局转弯余量：差速 1.8 s / 1.3 m，阿克曼 2.4 s / 1.6 m；需要其他值可继续编辑。RRT / Voronoi 的默认软预算为 0.5 s / 2 s。算法仍为 XY 全局规划，复杂阿克曼场景可能因为转弯空间不足而不能到达，诊断状态会保留。
 
 「导航与物理参数」提供**全局额外间距**、**间距策略**和**目标入射距离**。额外间距叠加在车体 `margin` 和点半径之外。默认 `backend.adaptive_clearance=true` 将它作为首选值，在共享时间预算内根据起终点和通道空间尝试减小；车体尺寸、margin 和点半径始终保持原值。选择固定间距时，它恢复为硬约束，过大可能导致 `invalid_start` / `no_path`。
 
 `navigation.goal_approach_distance` 留空时先使用车型默认长度，再按矩形扫掠可用空间缩短；已进入终点接近区域时避免重新绕回车后的入射起点。正数固定长度，`0` 关闭入射段。显式长度不会自动缩短。自动适配仍无法容纳时返回 `invalid_goal_approach`；它不保证二维路线具备阿克曼可达性。
 
-- **保存场景**：保存编辑器中的地图、初始位姿、目标、说明与完整有效参数；服务端会校验。默认目录为 `$XDG_DATA_HOME/pyrobo/scenes/`（未设置时为 `~/.local/share/pyrobo/scenes/`），可用 `--scenes-dir` 修改。旧 `examples/scenes/saved/` 原样保留；继续使用旧场景库时显式传入该目录。文件名使用独立 ID，每次保存新建用例。
-- **场景库**：按时间列出已保存用例，加载后恢复初始状态。重启服务后仍可加载。
-- **导出 / 导入 JSON**：可下载到当前设备、纳入版本管理或跨设备传递。导出保留当前草稿；导入会校验，成功后重置实验。
-- **将当前车位设为初始位姿**：以当前车位重新测试时使用。保存默认保留明确设置的初始位姿。
+- **场景与地形管理**：顶部「场景库」和「保存场景」打开同一个管理器。选择资源类型、分类目录和保存名称；文件名就是名称，禁止路径字符，大小写及 Unicode 等价重名会提示 409。覆盖必须明确选择；场景覆盖时可以修改名称，原文件随后移除。
+- **目录分类**：原厂目录只读，可加载编辑后另存到用户目录。默认用户目录为 `$XDG_DATA_HOME/pyrobo/scenes/`（未设置时为 `~/.local/share/pyrobo/scenes/`），可用 `--scenes-dir` 修改。添加分类时可指定服务器上的文件夹，或留空在 `categories/分类名/` 下创建。目录位置记录到根目录 `.library.json`，重启保留；移除登记不删除磁盘文件。原有随机 ID 文件仍可列出、加载，明确覆盖时转为用户指定名称。
+- **独立地形**：`maps/地形名.json` 只含边界、矩形、多边形和折线墙，不含车位、目标或算法参数。场景的 `config.map` 只保存 start/goal，通过 `terrain_ref: "maps/地形名.json"` 引用本目录地形；多个场景可共用一张地形。加载地形保留现有车辆和导航设置，在草稿中检查车位后应用。
+- **保存与删除**：新场景自动创建尚不存在的地形；同名地形内容不同时提示先保存地形或换名，避免静默影响其他场景。在「地形」页加载后可覆盖地形；所有引用它的场景下次加载使用新地形。被引用地形不能删除；地图改名用另存方式，原引用保留。场景可单独删除。
+- **导出 / 导入 JSON**：场景导出为 `schema_version=2` 的可移植文档，其中 `terrain` 内嵌地形，不依赖服务器文件路径；地图也可单独导出和导入。导入场景会校验并重置实验，导入地形仅更新草稿。磁盘上的引用式场景由 `load_scene_file(path)` 或 replay CLI 加载，跨设备复制目录时保留 `maps/`。
+- **将当前车位设为初始位姿**：以当前车位重新测试时使用。保存默认保留明确设置的初始位姿，不保存运行中速度或操作录像。
 
-JSON 格式为 `schema_version = 1`，顶层包含 `name`、`description`、`config`、`polygons` 和 `polylines`。`config.map` 保存边界、轴对齐矩形、初始位姿和可选目标；`polygons` 是填充多边形顶点坐标列表；`polylines` 每条记录为 `{"points": [[x,y], ...], "width": 0.3}`，可表示斜墙、折线和闭合线框。折线实体为带圆头的厚线段，矩形车体与线段的解析最短距离用于实体碰撞，规划点云由墙面采样生成。保存时展开模型 / 算法 / 物理的有效默认值，并保存 RRT 种子，便于重放和参数比较。用例不包含运行中的速度、历史轨迹或人工操作录制。
+`Scene` 的内存/编辑器表示继续展开旧版几何字段，统一通过 `Scene.document()` 输出 v2 文档；导出和磁盘文件不会重复存储 `config.map` 中的地形。参数保存包含有效默认值与 RRT 种子。折线记录为 `{"points": [[x,y], ...], "width": 0.3}`，实体碰撞仍使用厚线段解析距离。
+
+### 算法与车辆模板自动发现
+
+全局规划器、局部优化器、运动学模型与车辆模板的注册表位于 `pyrobo.registry`。实现类在自己模块内用装饰器登记，例如：
+
+```python
+from pyrobo.registry import register_local_optimizer
+
+@register_local_optimizer("my_dwa", config=MyDWAConfig, label="我的 DWA", family="dwa", teleop_config=True)
+class MyDWA:
+    ...
+```
+
+对应入口为 `register_global_planner`、`register_kinematic_model`、`register_vehicle_template`。`config` 是可默认构造的 dataclass；车型和车辆模板省略 `config` 时使用自身 dataclass。局部工厂遵守[局部算法装配协议](../../control/README.md)；`teleop_config=True` 表示接收单独的手动 DWA 配置。`family` 选择现有快捷参数面板，其他参数统一通过完整参数 JSON 修改；新增算法族可不指定 family。全局工厂签名为 `(config, footprint)`；开启自适应间距需要兼容其配置约定。新运动学模型还须提供实际控制/动力学所需协议，注册本身不代替这些实现。
+
+应用启动时导入 `pyrobo.planning`、`pyrobo.control`、`pyrobo.models.kinematics` 下的模块/包，新增包需从其 `__init__.py` 导入实现；独立插件可通过 `PYROBO_PLUGINS=my_package,my_other_package` 指定。导入即注册，重复名称报错。核心注册表不会扫描磁盘、启动线程或导入前端；插件只从服务器配置导入。`/api/catalog` 提供选项、标签、算法族和默认值，Web 与 Pygame CLI 从目录生成选项，无须改 HTML。
+
+车体模板含默认小车（长0.5/宽0.5）、牵引车（长0.79/宽0.54/中心偏移−0.295）和长车体（长1.0/宽0.5）。模板只设置几何参数，不绑定车型或算法；改长宽、margin、offset_x 后显示「自定义」，场景保存完整值。
+
+### 雷达发现未知障碍
+
+绘图工具的「新障碍类型」可选已知地形或未知障碍，矩形、多边形、折线与自由画墙均支持；「切换已知/未知」点击已有障碍可转换。未知障碍以橙色显示，保存在场景 `unknown_obstacles` 中，独立地形文件不包含它们。
+
+实体世界始终包含全部障碍。全局规划、局部控制与独立安全门只收到已知地图点云加当前雷达扫描；扫描使用真实位姿、有限量程、有限束数、射线首次回波和遮挡，世界坐标蓝点表示实际回波。观测带当前仿真时间；重置清除扫描状态。当前实现是单帧理想二维雷达，不积累历史点云或隐式执行 SLAM；离开视野后不保留额外地图记忆，稀疏扫描也不能保证未采样表面的安全。
+
+原厂「雷达发现绕障」示例使用独立的「空场地」地图，机器人接近前方未知障碍后重新规划。`experiment.add_boxes` 保持原有语义：事件障碍立即加入已知地图；需要雷达发现的实体请使用 `unknown_obstacles`。冻结观测实验保留原时间戳，恢复后重新扫描。
 
 已提供完整用例 [polygon_corridor.json](../scenes/polygon_corridor.json)。保存目录默认被 Git 忽略；需要回归跟踪的 JSON 可导出到 `examples/scenes/` 下。
 
@@ -117,7 +170,10 @@ python -m pyrobo.apps.web_sim.replay examples/scenes/saved/*.json \
 ## 验证与结构
 
 ```bash
-python -m pytest tests/test_web_sim.py tests/test_pygame_session.py tests/test_pygame_ui.py -q
+python scripts/test.py quick
+python scripts/test.py related --area web --area registry
+# 仅静态页面改动：
+python scripts/test.py related --area web-ui
 ```
 
 浏览器回归脚本为 [browser_web_sim.mjs](../../../tests/browser_web_sim.mjs)。在另一个终端启动服务，使用已有 Chromium / Chrome / Edge 和可选的 `playwright-core` 执行：
@@ -132,6 +188,8 @@ WEB_SIM_URL=http://127.0.0.1:8000 node tests/browser_web_sim.mjs
 
 脚本实际绘制矩形、自由画墙、多边形和折线、摆放车辆与目标、保存加载、导入导出、验证两车型导航与急停，并在移动视口派发触摸事件验证屏幕摇杆。默认截图和导出用例保存在 `/tmp/pyrobo-web-browser`，可通过 `WEB_SIM_ARTIFACTS` 修改。Node 与 Playwright 仅用于开发验证，启动前端不需要它们。
 
-`pyrobo/apps/sim_common/` 是与 Pygame 共享的配置、Session 和 Worker；`world.py` 增加多边形实体，`scene.py` 管理格式和持久化，`server.py` 处理传输，`static/` 为静态前端，`replay.py` 为测试用例入口。算法与物理仍在 pyrobo 核心库中。工作线程独占仿真，ASGI 事件循环负责连接与消息；固定 dt，耗时规划使仿真变慢，不连续追赶补帧。
+`pyrobo/apps/sim_common/` 是与 Pygame 共享的配置、Session 和 Worker；`world.py` 增加多边形实体，`scene.py` 管理格式与观测，`storage.py` 管理目录和原子持久化，`server.py` 处理传输，`static/` 为静态前端，`replay.py` 为测试用例入口。算法与物理仍在 pyrobo 核心库中。工作线程独占仿真，ASGI 事件循环负责连接与消息；固定 dt，耗时规划使仿真变慢，不连续追赶补帧。
 
 服务生命周期与 WebSocket 接口参考 FastAPI 官方 [lifespan 文档](https://fastapi.tiangolo.com/advanced/events/) 和 [WebSocket 文档](https://fastapi.tiangolo.com/advanced/websockets/)。
+
+新增管理器专项为 `tests/browser_discovery_library.mjs`，使用相同环境变量。必须指向测试专用 `--scenes-dir`：它在「浏览器分类」中创建、覆盖和删除固定名称的测试资源。覆盖动态目录选项、模板/自定义、未知障碍转换、扫描绕行、重名、目录、场景改名覆盖、地形覆盖、导入导出和390px视口。

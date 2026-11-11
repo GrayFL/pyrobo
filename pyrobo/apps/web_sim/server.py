@@ -17,7 +17,9 @@ from pyrobo.apps.sim_common.session import Action, ControlInput, Worker
 from pyrobo.core import pose2d
 from pyrobo.core.geometry import planar_state
 from pyrobo.geometry.cache import SnapshotIndex
-from .scene import MAX_SCENE_BYTES, Scene, SceneSession, SceneStore
+from .scene import MAX_SCENE_BYTES, Scene, SceneSession, SceneStore, Terrain
+from .storage import Library, load_scene_file
+from pyrobo.apps.sim_common.catalog import discover, catalog
 
 STATIC = Path(__file__).parent/'static'
 
@@ -124,12 +126,14 @@ class Room:
 
 
 def create_app(*, scenes_dir=None, initial_scene=None, max_clients=8):
+    discover()
     initial_scene = initial_scene or Scene(name='交错墙 · 绕行测试')
     rooms = set()
 
     @asynccontextmanager
     async def lifespan(app):
-        app.state.store = SceneStore(scenes_dir or Path(os.environ.get('XDG_DATA_HOME', Path.home()/'.local/share'))/'pyrobo'/'scenes')
+        app.state.library = Library(scenes_dir or Path(os.environ.get('XDG_DATA_HOME', Path.home()/'.local/share'))/'pyrobo'/'scenes', Path(__file__).parents[1]/'scenes')
+        app.state.store = app.state.library.store('user')
         yield
         await asyncio.gather(*(asyncio.to_thread(room.close) for room in tuple(rooms)))
 
@@ -142,7 +146,11 @@ def create_app(*, scenes_dir=None, initial_scene=None, max_clients=8):
 
     @app.get('/api/bootstrap')
     def bootstrap():
-        return {'scene': initial_scene.model_dump(), 'max_clients': max_clients}
+        return {'scene': initial_scene.model_dump(), 'max_clients': max_clients, 'catalog': catalog()}
+
+    @app.get('/api/catalog')
+    def get_catalog():
+        return catalog()
 
     @app.get('/api/scenes')
     def list_scenes():
@@ -160,7 +168,7 @@ def create_app(*, scenes_dir=None, initial_scene=None, max_clients=8):
     def load_example(identifier: str):
         if identifier not in examples:
             raise HTTPException(404, 'example not found')
-        return Scene.model_validate_json(examples[identifier].read_bytes()).model_dump()
+        return load_scene_file(examples[identifier]).model_dump()
 
     @app.get('/api/scenes/{identifier}')
     def load_scene(identifier: str):
@@ -182,8 +190,96 @@ def create_app(*, scenes_dir=None, initial_scene=None, max_clients=8):
             scene = await asyncio.to_thread(Scene.model_validate_json, body)
             identifier = await asyncio.to_thread(app.state.store.save, scene)
             return {'id': identifier, 'name': scene.name}
+        except FileExistsError as error:
+            raise HTTPException(409, str(error))
         except (ValueError, TypeError, KeyError) as error:
             raise HTTPException(422, str(error))
+
+    def library_call(operation):
+        try:
+            return operation()
+        except FileExistsError as error:
+            raise HTTPException(409, str(error))
+        except FileNotFoundError as error:
+            raise HTTPException(404, str(error))
+        except PermissionError as error:
+            raise HTTPException(403, str(error))
+        except (ValueError, TypeError, KeyError) as error:
+            raise HTTPException(422, str(error))
+        except OSError as error:
+            raise HTTPException(400, str(error))
+
+    async def body_json(request):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_SCENE_BYTES:
+                raise HTTPException(413, 'resource exceeds 2 MB')
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise ValueError('expected JSON object')
+            return data
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+
+    @app.get('/api/library')
+    def folders():
+        return app.state.library.list_folders()
+
+    @app.post('/api/library', status_code=201)
+    async def add_folder(request: Request):
+        data = await body_json(request)
+        return library_call(lambda: app.state.library.add_folder(data.get('name'), data.get('path')))
+
+    @app.delete('/api/library/{folder}')
+    def remove_folder(folder: str):
+        return library_call(lambda: app.state.library.remove_folder(folder))
+
+    @app.get('/api/library/{folder}/{kind}')
+    def resources(folder: str, kind: str):
+        return library_call(lambda: app.state.library.store(folder).list(kind))
+
+    @app.get('/api/library/{folder}/{kind}/{identifier}')
+    def resource(folder: str, kind: Literal['scenes', 'maps'], identifier: str):
+        def load():
+            store = app.state.library.store(folder)
+            return (store.load(identifier) if kind == 'scenes' else store.load_map(identifier)).model_dump()
+        return library_call(load)
+
+    async def write_resource(request, folder, kind, identifier=None):
+        data = await body_json(request)
+        def save():
+            store = app.state.library.store(folder)
+            if kind == 'scenes':
+                scene = Scene.model_validate(data['scene'])
+                name = store.save(scene, identifier=identifier, map_name=data.get('map_name'))
+            else:
+                name = store.save_map(Terrain.model_validate(data), identifier=identifier)
+            return {'id': name, 'name': name}
+        return await asyncio.to_thread(library_call, save)
+
+    @app.post('/api/library/{folder}/{kind}', status_code=201)
+    async def create_resource(request: Request, folder: str, kind: Literal['scenes', 'maps']):
+        return await write_resource(request, folder, kind)
+
+    @app.put('/api/library/{folder}/{kind}/{identifier}')
+    async def replace_resource(request: Request, folder: str, kind: Literal['scenes', 'maps'], identifier: str):
+        return await write_resource(request, folder, kind, identifier)
+
+    @app.delete('/api/library/{folder}/{kind}/{identifier}')
+    def delete_resource(folder: str, kind: Literal['scenes', 'maps'], identifier: str):
+        return library_call(lambda: app.state.library.store(folder).delete(identifier, kind))
+
+    @app.post('/api/terrain/validate')
+    async def validate_terrain(request: Request):
+        data = await body_json(request)
+        return await asyncio.to_thread(library_call, lambda: Terrain.model_validate(data).model_dump(mode='json'))
+
+    @app.post('/api/export')
+    async def export_scene(request: Request):
+        data = await body_json(request)
+        return await asyncio.to_thread(library_call, lambda: Scene.model_validate(data).document())
 
     @app.websocket('/ws')
     async def websocket(ws: WebSocket):

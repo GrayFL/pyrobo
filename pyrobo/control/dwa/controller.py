@@ -28,6 +28,10 @@ class DWAResult:
     mode: str = 'following'
 
 
+from pyrobo.registry import register_local_optimizer
+
+
+@register_local_optimizer('dwa', config=DWAConfig, label='DWA · 动态窗口', family='dwa')
 class DynamicWindow(DWAEngine):
     """Legacy step/stop signatures; optimize(observation, request) is the new API."""
     def _chassis(self, pose, velocity, chassis=None):

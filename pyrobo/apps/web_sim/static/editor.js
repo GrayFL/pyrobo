@@ -255,6 +255,7 @@ export class Editor {
       if (Number.isFinite(width) && width >= 0.05 && width <= 3)
         this.hooks.polygons(brushPolygons(g.stroke, width));
     } else if (this.tool === 'erase') this.hooks.erase(p);
+    else if (this.tool === 'classify') this.hooks.classify(p);
     this.draw();
   }
   finishPolygon() {
@@ -320,13 +321,18 @@ export class Editor {
     this.path(corners, ghost ? '#809e89' : '#236d96', 2, ghost ? '#d8e5dbaa' : '#bad8e8', true);
     c.setLineDash([]);
     this.arrow(p, ghost ? '#7e9b83' : '#225d78', Math.max(0.4, f.length * 0.65));
+    const modelFamily = this.catalog?.models.find(x => x.id === this.scene.config.backend.model)?.family;
+    const differential = modelFamily === 'differential';
+    if (differential) this.path([map([0, -f.width/2]), map([0, f.width/2])], '#264e61', 1);
     if (!ghost)
-      for (const x of [-1, 1])
+      for (const x of differential ? [0] : [-1, 1])
         for (const y of [-1, 1]) {
-          const center = map([f.offset_x + x * f.length * 0.32, y * f.width * 0.56]),
+          const center = map(differential
+            ? [0, y * this.scene.config.differential.track / 2]
+            : [f.offset_x + x * f.length * 0.32, y * f.width * 0.56]),
             a =
               p[2] +
-              (x === 1 && this.scene.config.backend.model === 'ackermann'
+              (x === 1 && modelFamily === 'ackermann'
                 ? this.state?.steering || 0
                 : 0);
           this.path(
@@ -338,6 +344,34 @@ export class Editor {
             4,
           );
         }
+    if (!ghost) {
+      // pose is the drive-axle midpoint, not the rectangle's geometric center.
+      // Mark both points in world coordinates so an offset body's spin is clear.
+      const axle = this.pixel(p), center = this.pixel(map([f.offset_x, 0]));
+      if (Math.abs(f.offset_x) > 1e-6) {
+        c.setLineDash([3, 3]);
+        this.path([p.slice(0, 2), map([f.offset_x, 0])], '#9a4e80', 1);
+        c.setLineDash([]);
+        c.beginPath();
+        c.arc(...center, 3.5, 0, Math.PI * 2);
+        c.fillStyle = '#9a4e80';
+        c.fill();
+        c.strokeStyle = '#fff';
+        c.lineWidth = 1;
+        c.stroke();
+      }
+      c.beginPath();
+      c.arc(...axle, 4.5, 0, Math.PI * 2);
+      c.fillStyle = '#fff';
+      c.fill();
+      c.strokeStyle = '#173e56';
+      c.lineWidth = 1.5;
+      c.moveTo(axle[0]-7, axle[1]);
+      c.lineTo(axle[0]+7, axle[1]);
+      c.moveTo(axle[0], axle[1]-7);
+      c.lineTo(axle[0], axle[1]+7);
+      c.stroke();
+    }
     c.restore();
   }
   draw() {
@@ -389,6 +423,21 @@ export class Editor {
     c.lineJoin = 'round';
     for (const line of lines) this.path(line.points, '#95ac9b', line.width * this.zoom);
     c.restore();
+    const unknown = this.scene.unknown_obstacles || {boxes: [], polygons: [], polylines: []};
+    c.save();
+    c.setLineDash([5, 4]);
+    for (const poly of [...unknown.boxes.map(([a,b,d,e]) => [[a,d],[b,d],[b,e],[a,e]]), ...unknown.polygons])
+      this.path(poly, '#c77930', 1.5, '#e5a55a55', true);
+    c.setLineDash([]);
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    for (const line of unknown.polylines) this.path(line.points, '#c7793088', line.width*this.zoom);
+    c.restore();
+    if (!this.dirty) {
+      c.fillStyle = '#167bd1';
+      for (const p of this.state?.experiment?.scan_points || []) {
+        const q = this.pixel(p); c.fillRect(q[0]-1.5, q[1]-1.5, 3, 3);
+      }
+    }
     if (this.points) {
       c.fillStyle = '#4b6d59';
       const spacing = this.scene.config.app.point_spacing;

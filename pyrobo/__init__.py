@@ -9,7 +9,9 @@ from .models.dynamics import ChassisDynamics, Drag, DynamicsConfig, DynamicsResu
 from .navigation import NavigationConfig, NavigationInput, NavigationOutput, Navigator, PathProgress, PathTracker
 from .planning import RRTConnectConfig, VoronoiConfig, VoronoiPlanner
 from .control import (DWAConfig, DWAEngine, DynamicWindow, TEBConfig, TEBEngine, TimedElasticBand,
-                      EBDWAConfig, EBPathRepairer, EBReference, ElasticBandDWA)
+                      EBDWAConfig, EBPathRepairer, EBReference, ElasticBandDWA,
+                      RefDWAConfig, RefDWA, RefTEBConfig, RefTEB,
+                      TowingDWAConfig, TowingDWA, TowingTEBConfig, TowingTEB)
 from .runtime import ControlMode, Supervisor
 from .safety import SafetyConfig, SafetyGuard
 from .teleop import TeleopAdapter
@@ -24,4 +26,6 @@ __all__ = ['Bounds2D', 'Footprint', 'Twist2D', 'pose2d', 'PointCloud', 'PointObs
            'NavigationStatus', 'Path', 'PlanResult', 'PlanStatus', 'RobotObservation', 'SafetyAction',
            'SafetyAssessment', 'Trajectory', 'NavigationConfig', 'ControlMode', 'Supervisor',
            'SafetyConfig', 'SafetyGuard', 'TeleopAdapter', 'TEBConfig', 'TEBEngine', 'TimedElasticBand',
-           'EBDWAConfig', 'EBPathRepairer', 'EBReference', 'ElasticBandDWA']
+           'EBDWAConfig', 'EBPathRepairer', 'EBReference', 'ElasticBandDWA',
+           'RefDWAConfig', 'RefDWA', 'RefTEBConfig', 'RefTEB',
+           'TowingDWAConfig', 'TowingDWA', 'TowingTEBConfig', 'TowingTEB']

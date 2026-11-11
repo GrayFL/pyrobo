@@ -1,3 +1,4 @@
+import { saveThroughLibrary } from './browser_library_helpers.mjs';
 // Opt-in real-browser TEB configuration, persistence, corner navigation and mobile layout.
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -43,8 +44,7 @@ try {
   assert.equal(exported.config.teb.prediction_time, 2.2);
   assert.equal(exported.config.dwa.prediction_time, 1.8);
   await writeFile(`${artifacts}/teb-scene.json`, JSON.stringify(exported, null, 2));
-  await page.locator('#save').click();
-  await page.waitForFunction(() => document.querySelector('#message').textContent.startsWith('已保存'));
+  await saveThroughLibrary(page);
   for (const model of ['differential', 'ackermann']) {
     await page.locator('#model').selectOption(model);
     await page.locator('#apply').click();

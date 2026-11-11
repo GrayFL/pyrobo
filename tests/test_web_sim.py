@@ -20,7 +20,7 @@ from pyrobo.simulation import World2D
 
 
 def scene(**backend):
-    return Scene(name='可回放 / 测试', config={'backend': backend,
+    return Scene(name='可回放测试', config={'backend': backend,
                  'map': {'preset': 'custom', 'bounds': [-4, 4, -3, 3],
                          'start': [-2, 0, 0], 'goal': [1.5, 0, 0], 'boxes': []}},
                  polygons=[[[0, 1.2], [1, 1.2], [.8, 2.3], [0, 2]]],
@@ -35,8 +35,10 @@ def test_scene_round_trip_freezes_parameters_and_retains_original_start(tmp_path
     identifier = store.save(case)
     assert store.load(identifier).model_dump() == case.model_dump()
     assert store.list()[0]['name'] == case.name
-    assert store.save(case) != identifier
-    for invalid in ('../outside', '123', 'a'*32+'.json'):
+    with pytest.raises(FileExistsError):
+        store.save(case)
+    assert store.save(case, identifier=identifier) == identifier
+    for invalid in ('../outside', '..', 'a/b'):
         with pytest.raises(ValueError):
             store.load(invalid)
     run = SceneSession(case)
@@ -200,7 +202,7 @@ def test_http_case_storage_and_validation(tmp_path):
         identifier = response.json()['id']
         assert client.get(f'/api/scenes/{identifier}').json() == original
         assert len(client.get('/api/scenes').json()) == 1
-        assert client.get('/api/scenes/not-an-id').status_code == 422
+        assert client.get('/api/scenes/not-an-id').status_code == 404
         assert client.get('/api/scenes/'+'0'*32).status_code == 404
         invalid = deepcopy(original)
         invalid['config']['map']['start'] = [20, 0, 0]

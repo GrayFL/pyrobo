@@ -1,0 +1,14 @@
+{
+  "boxes": [],
+  "polygons": [],
+  "polylines": [],
+  "schema_version": 1,
+  "kind": "terrain",
+  "name": "空场地",
+  "bounds": [
+    -5.0,
+    5.0,
+    -4.0,
+    4.0
+  ]
+}

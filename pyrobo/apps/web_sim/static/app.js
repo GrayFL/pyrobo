@@ -1,4 +1,6 @@
 import { Editor, clone, inside, boxes, segmentDistance } from "./editor.js";
+import { installLibrary } from "./library.js";
+let catalog = null;
 const $ = (id) => document.getElementById(id),
   rad = (degrees) => (degrees * Math.PI) / 180,
   deg = (radians) => (radians * 180) / Math.PI;
@@ -26,6 +28,7 @@ const hints = {
   brush: "按住连续画墙，支持触屏绘制",
   polyline: "逐点点击绘制折线墙；回车或「完成折线」结束；Esc 取消",
   polygon: "逐点点击；回车或「完成多边形」封闭；Esc 取消",
+  classify: "点击障碍，在已知地形与雷达发现的未知障碍之间切换",
   erase: "点击删除一个障碍，自由画墙可分段删除",
   pan: "拖动平移地图；滚轮缩放",
 };
@@ -64,21 +67,30 @@ function sync(fit = false) {
   $("planner").value = c.backend.planner;
   $("model").value = c.backend.model;
   $("local-optimizer").value = c.backend.local_optimizer;
-  $("teb-settings").hidden = c.backend.local_optimizer !== "teb";
-  $("teb-nodes").value = c.teb?.max_samples ?? 16;
-  $("teb-iterations").value = c.teb?.max_iterations ?? 12;
-  $("teb-budget").value = c.teb?.time_budget ?? "";
-  $("eb-settings").hidden = c.backend.local_optimizer !== "eb_dwa";
-  $("eb-clearance").value = c.eb_dwa?.preferred_clearance ?? .16;
-  $("eb-lookahead").value = c.eb_dwa?.track_lookahead_m ?? 1.3;
-  $("eb-nodes").value = c.eb_dwa?.max_nodes ?? 96;
-  $("eb-iterations").value = c.eb_dwa?.max_iterations ?? 24;
-  $("eb-budget").value = c.eb_dwa?.time_budget_s ?? "";
-  $("eb-speed-profile").checked = c.eb_dwa?.speed_profile ?? true;
-  $("eb-lateral-fraction").value = c.eb_dwa?.speed_lateral_fraction ?? .3;
+  const family = catalog?.optimizers.find(x => x.id === c.backend.local_optimizer)?.family;
+  const teb = family === "teb";
+  $("teb-settings").hidden = !teb;
+  const tebConfig = teb ? c[c.backend.local_optimizer] : c.teb;
+  $("teb-nodes").value = tebConfig?.max_samples ?? 16;
+  $("teb-iterations").value = tebConfig?.max_iterations ?? 12;
+  $("teb-budget").value = tebConfig?.time_budget ?? "";
+  $("eb-settings").hidden = family !== "eb_dwa";
+  const ebConfig = family === "eb_dwa" ? c[c.backend.local_optimizer] : c.eb_dwa;
+  $("eb-clearance").value = ebConfig?.preferred_clearance ?? .16;
+  $("eb-lookahead").value = ebConfig?.track_lookahead_m ?? 1.3;
+  $("eb-nodes").value = ebConfig?.max_nodes ?? 96;
+  $("eb-iterations").value = ebConfig?.max_iterations ?? 24;
+  $("eb-budget").value = ebConfig?.time_budget_s ?? "";
+  $("eb-speed-profile").checked = ebConfig?.speed_profile ?? true;
+  $("eb-lateral-fraction").value = ebConfig?.speed_lateral_fraction ?? .3;
   $("experiment").value = draft.experiment ? JSON.stringify(draft.experiment, null, 2) : "";
   $("body-length").value = c.footprint.length;
   $("body-width").value = c.footprint.width;
+  $("body-offset").value = c.footprint.offset_x;
+  $("body-margin").value = c.footprint.margin;
+  $("vehicle-template").value = catalog?.vehicles.find(v => Object.entries(v.defaults).every(([k,x]) => c.footprint[k] === x))?.id || "custom";
+  $("lidar-range").value = draft.lidar?.max_range ?? 4;
+  $("lidar-beams").value = draft.lidar?.beams ?? 360;
   for (const name of ["start", "goal"]) {
     const p = c.map[name] || [0, 0, 0];
     $("" + name + "-x").value = +p[0].toFixed(3);
@@ -90,9 +102,11 @@ function sync(fit = false) {
   );
   $("dt").value = c.app.dt;
   $("manual-speed").value = c.teleop.speed_limit;
-  $("horizon").value = c[c.backend.local_optimizer].prediction_time;
-  $("budget").value = c[c.backend.planner].time_budget;
-  $("planner-clearance").value = c[c.backend.planner].clearance;
+  for (const [id, config, key] of [["horizon", c[c.backend.local_optimizer], "prediction_time"],
+      ["budget", c[c.backend.planner], "time_budget"], ["planner-clearance", c[c.backend.planner], "clearance"]]) {
+    $(id).value = config[key] ?? "";
+    $(id).disabled = !(key in config);
+  }
   $("adaptive-clearance").value = c.backend.adaptive_clearance
     ? "adaptive"
     : "fixed";
@@ -269,6 +283,26 @@ async function navigate(p) {
   }
   message("导航目标已发送；WASD 或摇杆可随时接管。");
 }
+function geometry(s, layer = $("obstacle-layer").value) {
+  if (layer === "unknown") return s.unknown_obstacles ??= {boxes: [], polygons: [], polylines: []};
+  return {boxes: s.config.map.boxes, polygons: s.polygons, polylines: s.polylines};
+}
+function editObstacle(p, convert) {
+  for (const layer of ["unknown", "known"]) {
+    const g = geometry(draft, layer);
+    for (const key of ["polylines", "polygons", "boxes"]) {
+      const index = g[key].findLastIndex(item => key === "polylines"
+        ? item.points.slice(1).some((q,j) => segmentDistance(p,item.points[j],q) <= item.width/2+.05)
+        : inside(p, key === "boxes" ? [[item[0],item[2]],[item[1],item[2]],[item[1],item[3]],[item[0],item[3]]] : item));
+      if (index < 0) continue;
+      change(s => {
+        const item = geometry(s, layer)[key].splice(index, 1)[0];
+        if (convert) geometry(s, layer === "unknown" ? "known" : "unknown")[key].push(item);
+      });
+      return;
+    }
+  }
+}
 const editor = new Editor($("map"), {
   message,
   pose: (tool, p) => {
@@ -280,44 +314,25 @@ const editor = new Editor($("map"), {
     p[2] ??= draft.config.map[key]?.[2] || 0;
     change((s) => (s.config.map[key] = p));
   },
-  rect: (box) => change((s) => s.config.map.boxes.push(box)),
+  rect: (box) => change((s) => geometry(s).boxes.push(box)),
   polygons: (polygons) => {
-    if (draft.polygons.length + polygons.length > 256) {
+    if (geometry(draft).polygons.length + polygons.length > 256) {
       message("最多 256 个多边形；可加大墙体宽度或简化绘图。", true);
       return;
     }
-    change((s) => s.polygons.push(...clone(polygons)));
+    change((s) => geometry(s).polygons.push(...clone(polygons)));
   },
   polyline: (line) => {
-    if ((draft.polylines?.length || 0) >= 256) {
+    if ((geometry(draft).polylines?.length || 0) >= 256) {
       message("最多 256 条折线墙", true);
       return;
     }
     change((s) => {
-      s.polylines ??= [];
-      s.polylines.push(clone(line));
+      geometry(s).polylines.push(clone(line));
     });
   },
-  erase: (p) => {
-    let line = (draft.polylines || []).findLastIndex((l) =>
-      l.points
-        .slice(1)
-        .some(
-          (q, j) => segmentDistance(p, l.points[j], q) <= l.width / 2 + 0.05,
-        ),
-    );
-    if (line >= 0) {
-      change((s) => s.polylines.splice(line, 1));
-      return;
-    }
-    let i = draft.polygons.findLastIndex((poly) => inside(p, poly));
-    if (i >= 0) {
-      change((s) => s.polygons.splice(i, 1));
-      return;
-    }
-    i = boxes(draft).findLastIndex((poly) => inside(p, poly));
-    if (i >= 0) change((s) => s.config.map.boxes.splice(i, 1));
-  },
+  erase: (p) => editObstacle(p, false),
+  classify: (p) => editObstacle(p, true),
 });
 
 // Browser inputs are refreshed independently of rendering and backend planning.
@@ -580,6 +595,7 @@ $("clear-obstacles").onclick = () =>
     s.polygons = [];
     s.polylines = [];
     s.config.map.boxes = [];
+    s.unknown_obstacles = {boxes: [], polygons: [], polylines: []};
   });
 $("current-as-start").onclick = () => {
   if (state) change((s) => (s.config.map.start = clone(state.pose)));
@@ -596,17 +612,19 @@ function number(id) {
 }
 const setters = {
   "body-length": (c, v) => (c.footprint.length = v),
+  "body-margin": (c, v) => (c.footprint.margin = v),
   "body-width": (c, v) => (c.footprint.width = v),
+  "body-offset": (c, v) => (c.footprint.offset_x = v),
   dt: (c, v) => (c.app.dt = v),
   "manual-speed": (c, v) => (c.teleop.speed_limit = v),
   horizon: (c, v) => (c[c.backend.local_optimizer].prediction_time = v),
-  "teb-nodes": (c, v) => (c.teb.max_samples = v),
-  "teb-iterations": (c, v) => (c.teb.max_iterations = v),
-  "eb-nodes": (c, v) => (c.eb_dwa.max_nodes = v),
-  "eb-iterations": (c, v) => (c.eb_dwa.max_iterations = v),
-  "eb-clearance": (c, v) => (c.eb_dwa.preferred_clearance = v),
-  "eb-lookahead": (c, v) => (c.eb_dwa.track_lookahead_m = v),
-  "eb-lateral-fraction": (c, v) => (c.eb_dwa.speed_lateral_fraction = v),
+  "teb-nodes": (c, v) => (c[c.backend.local_optimizer].max_samples = v),
+  "teb-iterations": (c, v) => (c[c.backend.local_optimizer].max_iterations = v),
+  "eb-nodes": (c, v) => (c[c.backend.local_optimizer].max_nodes = v),
+  "eb-iterations": (c, v) => (c[c.backend.local_optimizer].max_iterations = v),
+  "eb-clearance": (c, v) => (c[c.backend.local_optimizer].preferred_clearance = v),
+  "eb-lookahead": (c, v) => (c[c.backend.local_optimizer].track_lookahead_m = v),
+  "eb-lateral-fraction": (c, v) => (c[c.backend.local_optimizer].speed_lateral_fraction = v),
   budget: (c, v) => (c[c.backend.planner].time_budget = v),
   "planner-clearance": (c, v) => (c[c.backend.planner].clearance = v),
   mass: (c, v) => (c.dynamics.mass = v),
@@ -632,23 +650,28 @@ for (const [id, set] of Object.entries(setters))
   };
 $("local-optimizer").onchange = () => {
   const name = $("local-optimizer").value;
-  change((s) => (s.config.backend.local_optimizer = name));
+  change((s) => {
+    const c = s.config;
+    c.backend.local_optimizer = name;
+    const lookahead = c[name].lookahead ?? c[name].track_lookahead_m;
+    if (lookahead !== undefined) c.navigation.lookahead = lookahead;
+  });
 };
 $("teb-budget").onchange = () => {
   try {
     const value = $("teb-budget").value.trim() ? number("teb-budget") : null;
-    change((s) => (s.config.teb.time_budget = value));
+    change((s) => (s.config[s.config.backend.local_optimizer].time_budget = value));
   } catch (error) { message(error.message, true); sync(); }
 };
 $("eb-budget").onchange = () => {
   try {
     const value = $("eb-budget").value.trim() ? number("eb-budget") : null;
-    change((s) => (s.config.eb_dwa.time_budget_s = value));
+    change((s) => (s.config[s.config.backend.local_optimizer].time_budget_s = value));
   } catch (e) { message(e.message, true); }
 };
 $("eb-speed-profile").onchange = () => {
   const enabled = $("eb-speed-profile").checked;
-  change((s) => (s.config.eb_dwa.speed_profile = enabled));
+  change((s) => (s.config[s.config.backend.local_optimizer].speed_profile = enabled));
 };
 $("apply-experiment").onclick = () => {
   try {
@@ -662,17 +685,11 @@ $("model").onchange = () => {
   change((s) => {
     const c = s.config;
     c.backend.model = model;
-    const car = model === "ackermann";
-    c.dwa.prediction_time = car ? 2.4 : 1.8;
-    c.dwa.lookahead = c.navigation.lookahead = car ? 1.6 : 1.3;
-    c.teb.lookahead = car ? 1.6 : 1.3;
-    c.eb_dwa.track_lookahead_m = car ? 1.6 : 1.3;
-    const clearance =
-      0.12 +
-      (car
-        ? (0.4 * c.ackermann.wheelbase) / Math.tan(c.ackermann.max_steering)
-        : 0);
-    c.rrt_connect.clearance = c.voronoi.clearance = clearance;
+    const spec = catalog.models.find(x => x.id === model);
+    for (const [name, defaults] of Object.entries(spec.controller_defaults)) Object.assign(c[name], defaults);
+    for (const [name, defaults] of Object.entries(spec.planner_defaults)) Object.assign(c[name], defaults);
+    const active = c[c.backend.local_optimizer];
+    c.navigation.lookahead = active.lookahead ?? active.track_lookahead_m ?? c.navigation.lookahead;
   });
 };
 $("goal-approach").onchange = () => {
@@ -729,23 +746,12 @@ function scenePayload() {
   if (advancedDirty) throw Error("请先更新完整参数 JSON 草稿");
   return clone(draft);
 }
-$("save").onclick = async () => {
+$("export").onclick = async () => {
   try {
-    const response = await fetch("/api/scenes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(scenePayload()),
-      }),
-      result = await response.json();
-    if (!response.ok) throw Error(result.detail);
-    message(`已保存「${result.name}」到共享场景库；初始位姿与参数均已保存。`);
-  } catch (e) {
-    message(e.message, true);
-  }
-};
-$("export").onclick = () => {
-  try {
-    const blob = new Blob([JSON.stringify(scenePayload(), null, 2)], {
+    const response = await fetch("/api/export", {method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(scenePayload())});
+    const exportedDocument = await response.json();
+    if (!response.ok) throw Error(exportedDocument.detail);
+    const blob = new Blob([JSON.stringify(exportedDocument, null, 2)], {
         type: "application/json",
       }),
       url = URL.createObjectURL(blob),
@@ -780,6 +786,14 @@ $("import-file").onchange = async (e) => {
     if (!file) return;
     if (file.size > 2000000) throw Error("文件超过 2 MB");
     const parsed = JSON.parse(await file.text());
+    if (parsed.kind === "terrain") {
+      const response = await fetch("/api/terrain/validate", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(parsed)});
+      const terrain = await response.json();
+      if (!response.ok) throw Error(terrain.detail);
+      busy = false;
+      library.importTerrain(terrain);
+      return;
+    }
     const result = await request("apply", { scene: parsed });
     checkpoint();
     draft = result.scene;
@@ -790,6 +804,7 @@ $("import-file").onchange = async (e) => {
     editor.state = null;
     setDirty(false);
     sync(true);
+    library.reset();
     message("场景已导入并重置。");
   } catch (error) {
     message(error.message, true);
@@ -799,6 +814,7 @@ $("import-file").onchange = async (e) => {
   }
 };
 $("new-scene").onclick = () => {
+  library.reset();
   change(
     (s) => {
       s.name = "新场景";
@@ -806,6 +822,7 @@ $("new-scene").onclick = () => {
       s.polygons = [];
       s.polylines = [];
       s.experiment = null;
+      s.unknown_obstacles = {boxes: [], polygons: [], polylines: []};
       s.config.map = {
         preset: "custom",
         bounds: [-5, 5, -4, 4],
@@ -818,42 +835,34 @@ $("new-scene").onclick = () => {
   );
   message("空白场景已准备好；绘制地图或放置车辆后应用。");
 };
-$("library-open").onclick = async () => {
-  try {
-    const responses = await Promise.all([fetch("/api/scenes"), fetch("/api/examples")]);
-    if (responses.some((r) => !r.ok)) throw Error("场景库加载失败");
-    const scenes = (await Promise.all(responses.map((r) => r.json()))).flat();
-    $("scene-list").replaceChildren();
-    if (!scenes.length) $("scene-list").textContent = "还没有保存的场景。";
-    for (const s of scenes) {
-      const row = document.createElement("div"),
-        info = document.createElement("div"),
-        title = document.createElement("strong"),
-        detail = document.createElement("small"),
-        button = document.createElement("button");
-      row.className = "scene-item";
-      title.textContent = s.name;
-      detail.textContent = `${s.builtin ? "内置回归场景" : new Date(s.modified * 1000).toLocaleString()} · ${s.description || "无说明"}`;
-      button.textContent = "加载";
-      button.onclick = async () => {
-        try {
-          const r = await fetch(`/api/${s.builtin ? "examples" : "scenes"}/${s.id}`);
-          if (!r.ok) throw Error("场景读取失败");
-          await loadScene(await r.json());
-          $("library").close();
-          message("已从场景库加载，车辆回到保存的初始位姿。");
-        } catch (e) {
-          message(e.message, true);
-        }
-      };
-      info.append(title, detail);
-      row.append(info, button);
-      $("scene-list").append(row);
-    }
-    $("library").showModal();
-  } catch (e) {
-    message(e.message, true);
-  }
+$("vehicle-template").onchange = () => {
+  const template = catalog.vehicles.find(v => v.id === $("vehicle-template").value);
+  if (template) change(s => s.config.footprint = clone(template.defaults));
 };
-$("library-close").onclick = () => $("library").close();
-connect();
+for (const [id, key] of [["lidar-range", "max_range"], ["lidar-beams", "beams"]]) {
+  $(id).onchange = () => { try { const value = number(id); change(s => {s.lidar ??= {max_range:4, beams:360}; s.lidar[key] = value;}); } catch(e) {message(e.message, true);} };
+}
+const library = installLibrary({scenePayload, loadScene, message,
+  setName: name => change(s => s.name = name),
+  loadTerrain: terrain => {
+    change(s => {
+      Object.assign(s.config.map, {preset: "custom", bounds: terrain.bounds, boxes: terrain.boxes});
+      s.polygons = terrain.polygons; s.polylines = terrain.polylines;
+    }, {fit: true});
+    message("地形已载入草稿，车位和导航参数保留；请检查车位后应用。");
+  }
+});
+async function initialize() {
+  try {
+    const response = await fetch("/api/catalog");
+    if (!response.ok) throw Error("算法目录加载失败，请刷新页面");
+    catalog = await response.json();
+    for (const [id, group] of [["planner","planners"],["model","models"],["local-optimizer","optimizers"],["vehicle-template","vehicles"]]) {
+      $(id).replaceChildren(...catalog[group].map(entry => new Option(entry.label, entry.id)));
+    }
+    $("vehicle-template").add(new Option("自定义", "custom"));
+    editor.catalog = catalog;
+    connect();
+  } catch (e) {message(e.message, true);}
+}
+initialize();

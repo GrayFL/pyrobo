@@ -4,14 +4,15 @@ from .config import NavigationConfig
 
 def components(*, footprint, planner, controller, model, dynamics, global_planner, local_optimizer,
                command_space, settings, index, max_cloud_age):
-    from ..control import DynamicWindow, TEBConfig, TimedElasticBand, EBDWAConfig, ElasticBandDWA
+    from ..control.registry import optimizer_spec
     from ..safety import SafetyConfig
     from pyrobo.models.dynamics.chassis import ChassisDynamics
     from pyrobo.models.kinematics.differential import DifferentialDrive
     from ..models.kinematics import command_space_for
-    from ..planning import RRTConnect, RRTConnectConfig, VoronoiConfig, VoronoiPlanner
+    from ..planning import RRTConnectConfig
     from pyrobo.core.footprint import Footprint
 
+    spec = optimizer_spec(controller) if local_optimizer is None else None
     footprint = footprint or getattr(local_optimizer, 'footprint', None) or Footprint()
     model = model or getattr(local_optimizer, 'model', None) or getattr(dynamics, 'model', None)
     if model is None:
@@ -22,8 +23,7 @@ def components(*, footprint, planner, controller, model, dynamics, global_planne
         raise ValueError('injected optimizer model and footprint must match navigation')
     space = command_space or getattr(local_optimizer, 'command_space', None) or command_space_for(model)
     if local_optimizer is None:
-        factory = (ElasticBandDWA if isinstance(controller, EBDWAConfig) else
-                   TimedElasticBand if isinstance(controller, TEBConfig) else DynamicWindow)
+        factory = spec.factory
         local_optimizer = factory(controller, footprint, model=model, dynamics=dynamics,
                                         command_space=space, index=index,
                                         input_limits=SafetyConfig(max_cloud_age=max_cloud_age))
@@ -37,10 +37,6 @@ def components(*, footprint, planner, controller, model, dynamics, global_planne
             # Clearance allowance for the default car's finite turning radius.
             radius = space.goal_approach_distance(0.) / 1.5
             planner = RRTConnectConfig(clearance=.12 + .4*radius, time_budget=.2)
-        if isinstance(planner, VoronoiConfig):
-            global_planner = VoronoiPlanner(planner, footprint)
-        elif planner is None or isinstance(planner, RRTConnectConfig):
-            global_planner = RRTConnect(planner, footprint)
-        else:
-            raise TypeError('planner must be RRTConnectConfig or VoronoiConfig; use global_planner for an implementation')
+        from ..registry import GLOBAL_PLANNERS, spec_for_config
+        global_planner = spec_for_config(GLOBAL_PLANNERS, planner, 'rrt_connect').factory(planner, footprint)
     return footprint, model, space, plant, global_planner, local_optimizer, settings

@@ -8,9 +8,12 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(prog='python -m pyrobo.apps.pygame_sim',
                                      description='Pygame robot workbench: WASD / gamepad / virtual stick / click-to-go.')
     parser.add_argument('--config', type=Path, help='TOML file; unspecified settings retain model-aware defaults')
-    parser.add_argument('--planner', choices=('rrt_connect', 'voronoi'))
-    parser.add_argument('--local-optimizer', choices=('dwa', 'teb', 'eb_dwa'))
-    parser.add_argument('--model', choices=('differential', 'ackermann'))
+    from pyrobo.apps.sim_common.catalog import discover
+    from pyrobo.registry import GLOBAL_PLANNERS, LOCAL_OPTIMIZERS, KINEMATIC_MODELS
+    discover()
+    parser.add_argument('--planner', choices=tuple(GLOBAL_PLANNERS))
+    parser.add_argument('--local-optimizer', choices=tuple(LOCAL_OPTIMIZERS))
+    parser.add_argument('--model', choices=tuple(KINEMATIC_MODELS))
     parser.add_argument('--map', dest='map_preset', choices=('detour', 'empty', 'custom'))
     parser.add_argument('--policy', choices=('teleop_stop', 'teleop_avoid'))
     parser.add_argument('--dt', type=float)

@@ -91,6 +91,10 @@ class _EBNavigationPolicy(NavigationPolicy):
         return scores.costs, np.ones(len(search), dtype=bool), scores.terms
 
 
+from pyrobo.registry import register_local_optimizer
+
+
+@register_local_optimizer('eb_dwa', config=EBDWAConfig, label='EB-DWA · 几何修复与动态窗口', family='eb_dwa', teleop_config=True)
 class ElasticBandDWA:
     """LocalMotionOptimizer; no duplicate candidate predictor or collision code.
 

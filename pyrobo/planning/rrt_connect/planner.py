@@ -58,6 +58,10 @@ class _Tree:
         return np.array(result[::-1])
 
 
+from pyrobo.registry import register_global_planner
+
+
+@register_global_planner('rrt_connect', config=RRTConnectConfig, label='RRT-Connect', family='', defaults=(("time_budget", .5),))
 class RRTConnect:
     """Each call builds fresh trees. The RNG advances between calls; reset replays it."""
     def __init__(self, config: RRTConnectConfig | None = None, footprint: Footprint | None = None):

@@ -1,3 +1,4 @@
+import { saveThroughLibrary } from './browser_library_helpers.mjs';
 // Opt-in real-browser integration. See examples/web_sim/README.md for setup.
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -86,21 +87,18 @@ try {
   await page.locator('#scene-name').fill('浏览器 · 地图编辑回归');
   await page.locator('#scene-name').press('Tab');
   let original = await exportScene();
-  assert.equal(original.config.map.boxes.length, 1);
-  assert.ok(original.polygons.length > 3);
-  assert.equal(original.polylines.length, 1);
-  assert.equal(original.polylines[0].points.length, 3);
-  assert.equal(original.polylines[0].width, 0.3);
+  assert.equal(original.terrain.boxes.length, 1);
+  assert.ok(original.terrain.polygons.length > 3);
+  assert.equal(original.terrain.polylines.length, 1);
+  assert.equal(original.terrain.polylines[0].points.length, 3);
+  assert.equal(original.terrain.polylines[0].width, 0.3);
   assert.ok(Math.abs(original.config.map.start[0] + 3) < 0.03);
   assert.ok(Math.abs(original.config.map.start[1] + 2) < 0.03);
   await page.locator('#undo').click();
   await page.locator('#redo').click();
   await page.locator('#apply').click();
   await applied();
-  await page.locator('#save').click();
-  await page.waitForFunction(() =>
-    document.querySelector('#message').textContent.startsWith('已保存'),
-  );
+  await saveThroughLibrary(page);
   const saved = await exportScene();
   await writeFile(`${artifacts}/browser-case.json`, JSON.stringify(saved, null, 2));
   await page.screenshot({ path: `${artifacts}/editor-desktop.png`, fullPage: true });
